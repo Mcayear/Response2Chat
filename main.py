@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, Request, HTTPException, Header
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 
@@ -689,6 +689,182 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+
+PASSTHROUGH_REQUEST_EXCLUDED_HEADERS = {
+    "authorization",
+    "connection",
+    "content-length",
+    "host",
+    "transfer-encoding",
+}
+
+PASSTHROUGH_RESPONSE_EXCLUDED_HEADERS = {
+    "connection",
+    "content-encoding",
+    "content-length",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+
+
+def extract_bearer_token(authorization: Optional[str]) -> str:
+    """Extract bearer token from Authorization header."""
+    if not authorization:
+        logger.warning("Missing Authorization header")
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+
+    return authorization.replace("Bearer ", "", 1) if authorization.startswith("Bearer ") else authorization
+
+
+def build_passthrough_request_headers(request: Request, token: str) -> Dict[str, str]:
+    """Copy client headers for upstream passthrough, excluding hop-by-hop headers."""
+    headers: Dict[str, str] = {}
+    for key, value in request.headers.items():
+        if key.lower() in PASSTHROUGH_REQUEST_EXCLUDED_HEADERS:
+            continue
+        headers[key] = value
+
+    headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def build_passthrough_response_headers(headers: httpx.Headers) -> Dict[str, str]:
+    """Filter upstream response headers for downstream responses."""
+    filtered_headers: Dict[str, str] = {}
+    for key, value in headers.items():
+        if key.lower() in PASSTHROUGH_RESPONSE_EXCLUDED_HEADERS:
+            continue
+        filtered_headers[key] = value
+    return filtered_headers
+
+
+@app.post("/v1/responses")
+async def responses_passthrough(
+    request: Request,
+    authorization: Optional[str] = Header(None)
+):
+    """Responses endpoint passthrough without request/response conversion."""
+    token = extract_bearer_token(authorization)
+    logger.debug(f"Token: {token[:10]}..." if len(token) > 10 else f"Token: {token}")
+
+    raw_body = await request.body()
+    is_stream_request = "text/event-stream" in request.headers.get("accept", "").lower()
+
+    if raw_body:
+        try:
+            request_json = json.loads(raw_body)
+            is_stream_request = bool(request_json.get("stream")) or is_stream_request
+            logger.info(f"Received /v1/responses request: {json.dumps(request_json, ensure_ascii=False, indent=2)}")
+        except json.JSONDecodeError:
+            logger.info("Received /v1/responses request: <non-json body>")
+    else:
+        logger.info("Received /v1/responses request: <empty body>")
+
+    client: httpx.AsyncClient = request.app.state.http_client
+    upstream_url = f"{RESPONSE_API_BASE}/responses"
+    upstream_headers = build_passthrough_request_headers(request, token)
+    upstream_params = list(request.query_params.multi_items())
+    stream_timeout = httpx.Timeout(
+        connect=30.0,
+        read=STREAM_READ_TIMEOUT,
+        write=30.0,
+        pool=POOL_TIMEOUT
+    )
+
+    logger.info(f"Passthrough /v1/responses -> {upstream_url}, stream={is_stream_request}")
+
+    if is_stream_request:
+        stream_context = client.stream(
+            "POST",
+            upstream_url,
+            headers=upstream_headers,
+            params=upstream_params,
+            content=raw_body,
+            timeout=stream_timeout
+        )
+        upstream_response = None
+
+        try:
+            upstream_response = await stream_context.__aenter__()
+            logger.info(f"Upstream /responses stream status: {upstream_response.status_code}")
+            response_headers = build_passthrough_response_headers(upstream_response.headers)
+
+            async def stream_generator():
+                try:
+                    async for chunk in upstream_response.aiter_raw():
+                        if chunk:
+                            yield chunk
+                except asyncio.CancelledError:
+                    logger.warning("/v1/responses stream cancelled by client")
+                    raise
+                finally:
+                    await stream_context.__aexit__(None, None, None)
+
+            return StreamingResponse(
+                stream_generator(),
+                status_code=upstream_response.status_code,
+                headers=response_headers
+            )
+        except httpx.TimeoutException:
+            if upstream_response is not None:
+                await upstream_response.aclose()
+            logger.error("/v1/responses streaming request timed out")
+            return JSONResponse(
+                status_code=504,
+                content={
+                    "error": {
+                        "message": "Request timeout",
+                        "type": "timeout_error"
+                    }
+                }
+            )
+        except Exception:
+            if upstream_response is not None:
+                await upstream_response.aclose()
+            raise
+
+    try:
+        upstream_response = await client.post(
+            upstream_url,
+            headers=upstream_headers,
+            params=upstream_params,
+            content=raw_body,
+            timeout=DEFAULT_TIMEOUT
+        )
+        logger.info(f"Upstream /responses non-stream status: {upstream_response.status_code}")
+        return Response(
+            content=upstream_response.content,
+            status_code=upstream_response.status_code,
+            headers=build_passthrough_response_headers(upstream_response.headers)
+        )
+    except httpx.TimeoutException:
+        logger.error("/v1/responses non-stream request timed out")
+        return JSONResponse(
+            status_code=504,
+            content={
+                "error": {
+                    "message": "Request timeout",
+                    "type": "timeout_error"
+                }
+            }
+        )
+    except Exception as e:
+        logger.error(f"/v1/responses passthrough failed: {str(e)}\n{traceback.format_exc()}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": {
+                    "message": str(e),
+                    "type": "internal_error"
+                }
+            }
+        )
 
 
 @app.post("/v1/chat/completions")

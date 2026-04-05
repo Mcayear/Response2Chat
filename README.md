@@ -157,6 +157,23 @@ curl -X POST "http://localhost:8000/v1/chat/completions" \
   }'
 ```
 
+### Responses 直通透传
+
+当客户端直接请求 `/v1/responses` 时，代理不会再做 `chat/completions -> responses` 转换，而是将请求体、查询参数和上游响应按原样透传。
+
+```bash
+curl -X POST "http://localhost:8000/v1/responses" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4.1",
+    "input": "Hello!",
+    "stream": false
+  }'
+```
+
+如果请求里带 `"stream": true`，代理会直接把上游 SSE 响应流原样返回给客户端。
+
 ### 健康检查
 
 ```bash
