@@ -10,14 +10,18 @@ import uuid
 import asyncio
 import logging
 import traceback
+from html import escape
 from typing import Optional, List, Dict, Any, Union
 from contextlib import asynccontextmanager
+from urllib.parse import parse_qs, quote
 
 import httpx
 from fastapi import FastAPI, Request, HTTPException, Header
-from fastapi.responses import StreamingResponse, JSONResponse, Response
+from fastapi.responses import StreamingResponse, JSONResponse, Response, HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
+
+from channel_store import AdminSessionManager, SettingsStore, mask_secret
 
 load_dotenv()
 
@@ -30,13 +34,19 @@ logging.basicConfig(
 logger = logging.getLogger("response2chat")
 
 # ==================== 配置 ====================
-RESPONSE_API_BASE = os.getenv("RESPONSE_API_BASE")
-if not RESPONSE_API_BASE:
-    raise ValueError("必须配置 RESPONSE_API_BASE 环境变量，请在 .env 文件中设置 Response API 的基础 URL")
+RESPONSE_API_BASE = os.getenv("RESPONSE_API_BASE", "").strip()
+RESPONSE_API_KEY = os.getenv("RESPONSE_API_KEY", "").strip()
 DEFAULT_TIMEOUT = int(os.getenv("DEFAULT_TIMEOUT", "300"))
 POOL_TIMEOUT = float(os.getenv("POOL_TIMEOUT", "10"))
 STREAM_READ_TIMEOUT = float(os.getenv("STREAM_READ_TIMEOUT", "120"))
 STREAM_MAX_DURATION = int(os.getenv("STREAM_MAX_DURATION", "0"))  # 0 表示不限制
+DATABASE_PATH = os.getenv("DATABASE_PATH", "data/response2chat.db")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin").strip() or "admin"
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123456")
+ADMIN_SESSION_TTL_SECONDS = int(os.getenv("ADMIN_SESSION_TTL_SECONDS", str(12 * 60 * 60)))
+ADMIN_SESSION_COOKIE_NAME = os.getenv("ADMIN_SESSION_COOKIE_NAME", "response2chat_admin_session")
+ADMIN_COOKIE_SECURE = os.getenv("ADMIN_COOKIE_SECURE", "false").lower() == "true"
+BOOTSTRAP_CHANNEL_NAME = os.getenv("BOOTSTRAP_CHANNEL_NAME", "默认渠道")
 
 # 连接池配置 - 防止连接泄漏和资源耗尽
 MAX_CONNECTIONS = int(os.getenv("MAX_CONNECTIONS", "100"))  # 最大连接数
@@ -655,11 +665,650 @@ async def parse_sse_line(line: str) -> tuple[Optional[str], Optional[Dict[str, A
     return None, None
 
 
+def format_admin_time(value: str) -> str:
+    if not value:
+        return "-"
+    return value.replace("T", " ").replace("+00:00", " UTC")
+
+
+def build_admin_notice(message: str, level: str) -> str:
+    if not message:
+        return ""
+
+    level_class = {
+        "success": "notice-success",
+        "error": "notice-error",
+        "warning": "notice-warning",
+    }.get(level, "notice-success")
+
+    return f'<div class="notice {level_class}">{escape(message)}</div>'
+
+
+def render_admin_layout(
+    title: str,
+    content: str,
+    username: Optional[str] = None,
+    notice: str = "",
+    level: str = "success",
+) -> str:
+    nav_html = ""
+    if username:
+        nav_html = f"""
+        <div class="topbar-actions">
+            <span class="badge">管理员 {escape(username)}</span>
+            <a class="ghost-link" href="/admin">控制台</a>
+            <form method="post" action="/admin/logout">
+                <button class="ghost-button" type="submit">退出登录</button>
+            </form>
+        </div>
+        """
+
+    return f"""
+    <!DOCTYPE html>
+    <html lang="zh-CN">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>{escape(title)}</title>
+        <style>
+            :root {{
+                --bg: #f4efe7;
+                --bg-accent: #fff8ef;
+                --card: rgba(255, 252, 247, 0.86);
+                --text: #1f2937;
+                --muted: #5b6472;
+                --line: rgba(74, 62, 46, 0.12);
+                --primary: #0f766e;
+                --primary-strong: #115e59;
+                --danger: #b42318;
+                --warning: #b45309;
+                --success-bg: rgba(15, 118, 110, 0.12);
+                --danger-bg: rgba(180, 35, 24, 0.1);
+                --warning-bg: rgba(180, 83, 9, 0.12);
+                --shadow: 0 20px 60px rgba(61, 41, 20, 0.12);
+                --radius: 22px;
+            }}
+            * {{ box-sizing: border-box; }}
+            body {{
+                margin: 0;
+                color: var(--text);
+                font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+                background:
+                    radial-gradient(circle at top left, rgba(15, 118, 110, 0.16), transparent 28%),
+                    radial-gradient(circle at top right, rgba(180, 83, 9, 0.18), transparent 24%),
+                    linear-gradient(180deg, var(--bg-accent), var(--bg));
+                min-height: 100vh;
+            }}
+            a {{ color: inherit; }}
+            .page {{ max-width: 1240px; margin: 0 auto; padding: 32px 20px 40px; }}
+            .topbar {{
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                gap: 16px;
+                margin-bottom: 24px;
+            }}
+            .brand {{
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+            }}
+            .eyebrow {{
+                margin: 0;
+                color: var(--primary-strong);
+                font-size: 13px;
+                font-weight: 700;
+                letter-spacing: 0.08em;
+                text-transform: uppercase;
+            }}
+            h1 {{ margin: 0; font-size: clamp(28px, 4vw, 42px); line-height: 1.05; }}
+            .subtitle {{ margin: 0; color: var(--muted); font-size: 15px; }}
+            .topbar-actions {{
+                display: flex;
+                align-items: center;
+                justify-content: flex-end;
+                flex-wrap: wrap;
+                gap: 10px;
+            }}
+            .badge {{
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                padding: 10px 14px;
+                border-radius: 999px;
+                background: rgba(15, 118, 110, 0.1);
+                color: var(--primary-strong);
+                font-size: 13px;
+                font-weight: 700;
+            }}
+            .ghost-link,
+            .ghost-button {{
+                border: 1px solid var(--line);
+                border-radius: 999px;
+                padding: 10px 14px;
+                background: rgba(255, 255, 255, 0.65);
+                color: var(--text);
+                text-decoration: none;
+                cursor: pointer;
+                font-size: 14px;
+            }}
+            .ghost-button:hover,
+            .ghost-link:hover {{ border-color: rgba(15, 118, 110, 0.45); }}
+            .notice {{
+                margin-bottom: 18px;
+                padding: 14px 16px;
+                border-radius: 16px;
+                border: 1px solid transparent;
+                font-size: 14px;
+            }}
+            .notice-success {{ background: var(--success-bg); border-color: rgba(15, 118, 110, 0.24); }}
+            .notice-error {{ background: var(--danger-bg); border-color: rgba(180, 35, 24, 0.22); }}
+            .notice-warning {{ background: var(--warning-bg); border-color: rgba(180, 83, 9, 0.22); }}
+            .grid {{ display: grid; gap: 18px; }}
+            .dashboard {{ grid-template-columns: 1.2fr 0.8fr; align-items: start; }}
+            .stats {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
+            .card {{
+                background: var(--card);
+                border: 1px solid rgba(255, 255, 255, 0.8);
+                box-shadow: var(--shadow);
+                backdrop-filter: blur(14px);
+                border-radius: var(--radius);
+                padding: 22px;
+            }}
+            .section-title {{
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 12px;
+                margin-bottom: 18px;
+            }}
+            .section-title h2,
+            .section-title h3 {{ margin: 0; font-size: 20px; }}
+            .muted {{ color: var(--muted); font-size: 13px; line-height: 1.5; }}
+            .stat-label {{ color: var(--muted); font-size: 13px; margin-bottom: 8px; }}
+            .stat-value {{ font-size: 32px; font-weight: 800; line-height: 1; }}
+            .stat-footnote {{ color: var(--muted); font-size: 12px; margin-top: 10px; }}
+            form {{ margin: 0; }}
+            .form-grid {{ display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+            .form-grid.single {{ grid-template-columns: 1fr; }}
+            label {{ display: flex; flex-direction: column; gap: 8px; font-size: 14px; font-weight: 600; }}
+            input,
+            textarea {{
+                width: 100%;
+                border: 1px solid var(--line);
+                border-radius: 14px;
+                padding: 12px 14px;
+                font: inherit;
+                color: var(--text);
+                background: rgba(255, 255, 255, 0.92);
+            }}
+            textarea {{ min-height: 108px; resize: vertical; }}
+            input:focus,
+            textarea:focus {{ outline: 2px solid rgba(15, 118, 110, 0.18); border-color: rgba(15, 118, 110, 0.4); }}
+            .button-row {{ display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }}
+            .primary-button,
+            .secondary-button,
+            .danger-button {{
+                border: none;
+                border-radius: 14px;
+                padding: 12px 16px;
+                font: inherit;
+                font-weight: 700;
+                cursor: pointer;
+            }}
+            .primary-button {{ background: var(--primary); color: #fff; }}
+            .secondary-button {{ background: rgba(15, 118, 110, 0.1); color: var(--primary-strong); }}
+            .danger-button {{ background: rgba(180, 35, 24, 0.12); color: var(--danger); }}
+            .primary-button:hover {{ background: var(--primary-strong); }}
+            .secondary-button:hover {{ background: rgba(15, 118, 110, 0.18); }}
+            .danger-button:hover {{ background: rgba(180, 35, 24, 0.2); }}
+            .stack {{ display: flex; flex-direction: column; gap: 14px; }}
+            .channel-list {{ display: flex; flex-direction: column; gap: 14px; }}
+            .channel-item {{
+                border: 1px solid var(--line);
+                border-radius: 18px;
+                padding: 16px;
+                background: rgba(255, 255, 255, 0.7);
+            }}
+            .channel-head {{
+                display: flex;
+                align-items: flex-start;
+                justify-content: space-between;
+                gap: 14px;
+                margin-bottom: 12px;
+            }}
+            .channel-meta {{ display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 14px; }}
+            .field-label {{ color: var(--muted); font-size: 12px; margin-bottom: 6px; }}
+            .field-value {{ font-size: 14px; line-height: 1.5; word-break: break-all; }}
+            .pill {{
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                border-radius: 999px;
+                padding: 8px 12px;
+                font-size: 12px;
+                font-weight: 700;
+            }}
+            .pill-enabled {{ background: rgba(15, 118, 110, 0.12); color: var(--primary-strong); }}
+            .pill-disabled {{ background: rgba(180, 35, 24, 0.12); color: var(--danger); }}
+            .action-row {{ display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }}
+            .action-row form {{ display: inline-flex; }}
+            .code-box {{
+                margin-top: 14px;
+                border-radius: 16px;
+                padding: 14px;
+                background: #12211e;
+                color: #def7ec;
+                font-size: 13px;
+                line-height: 1.6;
+                overflow-x: auto;
+            }}
+            .login-shell {{ max-width: 480px; margin: 8vh auto 0; }}
+            .login-shell .card {{ padding: 28px; }}
+            .helper-text {{ color: var(--muted); font-size: 13px; line-height: 1.6; }}
+            @media (max-width: 960px) {{
+                .dashboard,
+                .stats,
+                .form-grid,
+                .channel-meta {{ grid-template-columns: 1fr; }}
+                .topbar {{ align-items: flex-start; flex-direction: column; }}
+                .topbar-actions {{ justify-content: flex-start; }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="page">
+            <div class="topbar">
+                <div class="brand">
+                    <p class="eyebrow">Response2Chat Console</p>
+                    <h1>{escape(title)}</h1>
+                    <p class="subtitle">多渠道路由、管理员登录和外部访问 key 统一配置。</p>
+                </div>
+                {nav_html}
+            </div>
+            {build_admin_notice(notice, level)}
+            {content}
+        </div>
+    </body>
+    </html>
+    """
+
+
+def render_login_page(error_message: str = "", username: str = "", next_path: str = "/admin") -> str:
+    body = f"""
+    <div class="login-shell">
+        <div class="card stack">
+            <div class="section-title">
+                <div>
+                    <h2>管理员登录</h2>
+                    <p class="muted">使用默认管理员账号进入控制台，首次登录后建议立即修改密码。</p>
+                </div>
+            </div>
+            <form method="post" action="/admin/login" class="stack">
+                <input type="hidden" name="next" value="{escape(next_path)}" />
+                <label>
+                    用户名
+                    <input type="text" name="username" autocomplete="username" value="{escape(username)}" placeholder="admin" required />
+                </label>
+                <label>
+                    密码
+                    <input type="password" name="password" autocomplete="current-password" placeholder="请输入管理员密码" required />
+                </label>
+                <button class="primary-button" type="submit">登录控制台</button>
+            </form>
+            <p class="helper-text">默认账号密码可通过环境变量 ADMIN_USERNAME 和 ADMIN_PASSWORD 初始化。系统只会在第一次创建数据库时写入默认管理员。</p>
+        </div>
+    </div>
+    """
+    return render_admin_layout("管理后台登录", body, notice=error_message, level="error" if error_message else "success")
+
+
+def render_dashboard_page(
+    request: Request,
+    username: str,
+    channels: List[Dict[str, Any]],
+    stats: Dict[str, int],
+    notice: str = "",
+    level: str = "success",
+) -> str:
+    channel_cards = []
+    external_base = str(request.base_url).rstrip("/")
+
+    if channels:
+        for channel in channels:
+            toggle_label = "停用" if channel["enabled"] else "启用"
+            toggle_target = "0" if channel["enabled"] else "1"
+            state_class = "pill-enabled" if channel["enabled"] else "pill-disabled"
+            state_text = "启用中" if channel["enabled"] else "已停用"
+            description = escape(channel["description"] or "未填写描述")
+            example = escape(
+                json.dumps(
+                    {
+                        "model": "gpt-4.1",
+                        "messages": [{"role": "user", "content": "你好"}],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            channel_cards.append(
+                f"""
+                <div class="channel-item">
+                    <div class="channel-head">
+                        <div>
+                            <h3>{escape(channel['name'])}</h3>
+                            <p class="muted">{description}</p>
+                        </div>
+                        <span class="pill {state_class}">{state_text}</span>
+                    </div>
+                    <div class="channel-meta">
+                        <div>
+                            <div class="field-label">上游地址</div>
+                            <div class="field-value">{escape(channel['upstream_base_url'])}</div>
+                        </div>
+                        <div>
+                            <div class="field-label">上游密钥</div>
+                            <div class="field-value">{escape(mask_secret(channel['upstream_api_key']))}</div>
+                        </div>
+                        <div>
+                            <div class="field-label">外部访问 Key</div>
+                            <div class="field-value">{escape(channel['access_key'])}</div>
+                        </div>
+                        <div>
+                            <div class="field-label">最近更新</div>
+                            <div class="field-value">{escape(format_admin_time(channel['updated_at']))}</div>
+                        </div>
+                    </div>
+                    <div class="action-row">
+                        <a class="ghost-link" href="/admin/channels/{channel['id']}">编辑配置</a>
+                        <form method="post" action="/admin/channels/{channel['id']}/toggle">
+                            <input type="hidden" name="enabled" value="{toggle_target}" />
+                            <button class="secondary-button" type="submit">{toggle_label}</button>
+                        </form>
+                        <form method="post" action="/admin/channels/{channel['id']}/rotate-key">
+                            <button class="secondary-button" type="submit">轮换外部 Key</button>
+                        </form>
+                        <form method="post" action="/admin/channels/{channel['id']}/delete" onsubmit="return confirm('确认删除这个渠道吗？');">
+                            <button class="danger-button" type="submit">删除</button>
+                        </form>
+                    </div>
+                    <div class="code-box">POST {external_base}/v1/chat/completions\nAuthorization: Bearer {escape(channel['access_key'])}\nContent-Type: application/json\n\n{example}</div>
+                </div>
+                """
+            )
+
+    body = f"""
+    <div class="grid stats">
+        <div class="card">
+            <div class="stat-label">渠道总数</div>
+            <div class="stat-value">{stats['total']}</div>
+            <div class="stat-footnote">所有已创建渠道</div>
+        </div>
+        <div class="card">
+            <div class="stat-label">已启用</div>
+            <div class="stat-value">{stats['enabled']}</div>
+            <div class="stat-footnote">可供外部调用的渠道</div>
+        </div>
+        <div class="card">
+            <div class="stat-label">已停用</div>
+            <div class="stat-value">{stats['disabled']}</div>
+            <div class="stat-footnote">保留配置但不接受调用</div>
+        </div>
+    </div>
+    <div class="grid dashboard" style="margin-top: 18px;">
+        <div class="card stack">
+            <div class="section-title">
+                <div>
+                    <h2>新增渠道</h2>
+                    <p class="muted">填写上游 Response API 地址和真实密钥，保存后系统会自动生成对外访问 key。</p>
+                </div>
+            </div>
+            <form method="post" action="/admin/channels" class="stack">
+                <div class="form-grid">
+                    <label>
+                        渠道名称
+                        <input type="text" name="name" placeholder="例如：主账号 A" required />
+                    </label>
+                    <label>
+                        上游基础 URL
+                        <input type="text" name="upstream_base_url" placeholder="https://your-provider.com/v1" required />
+                    </label>
+                </div>
+                <div class="form-grid single">
+                    <label>
+                        上游 API Key
+                        <input type="text" name="upstream_api_key" placeholder="sk-...，可留空表示不上送 Authorization" />
+                    </label>
+                </div>
+                <div class="form-grid single">
+                    <label>
+                        描述
+                        <textarea name="description" placeholder="可选，记录渠道归属或用途"></textarea>
+                    </label>
+                </div>
+                <div class="button-row">
+                    <button class="primary-button" type="submit">创建渠道并生成外部 Key</button>
+                </div>
+            </form>
+        </div>
+        <div class="stack">
+            <div class="card stack">
+                <div class="section-title">
+                    <div>
+                        <h3>修改管理员密码</h3>
+                        <p class="muted">默认密码只用于初始化。数据库生成后，环境变量不会覆盖已修改的管理员密码。</p>
+                    </div>
+                </div>
+                <form method="post" action="/admin/change-password" class="stack">
+                    <label>
+                        当前密码
+                        <input type="password" name="current_password" autocomplete="current-password" required />
+                    </label>
+                    <label>
+                        新密码
+                        <input type="password" name="new_password" autocomplete="new-password" minlength="8" required />
+                    </label>
+                    <label>
+                        确认新密码
+                        <input type="password" name="confirm_password" autocomplete="new-password" minlength="8" required />
+                    </label>
+                    <button class="primary-button" type="submit">更新管理员密码</button>
+                </form>
+            </div>
+            <div class="card stack">
+                <div class="section-title">
+                    <div>
+                        <h3>调用规则</h3>
+                        <p class="muted">外部客户端使用系统生成的访问 key 调用代理，代理再自动切换到对应渠道的真实 URL 和上游密钥。</p>
+                    </div>
+                </div>
+                <div class="helper-text">调用地址保持不变：/v1/chat/completions、/v1/responses、/v1/models。区别只在 Authorization 里放的是渠道访问 key，而不是上游服务的真实 key。</div>
+            </div>
+        </div>
+    </div>
+    <div class="card" style="margin-top: 18px;">
+        <div class="section-title">
+            <div>
+                <h2>渠道列表</h2>
+                <p class="muted">每个渠道都有独立的上游地址、真实密钥和对外访问 key。</p>
+            </div>
+        </div>
+        <div class="channel-list">
+            {''.join(channel_cards) if channel_cards else '<div class="channel-item"><p class="muted">当前还没有渠道，请先创建一个。</p></div>'}
+        </div>
+    </div>
+    """
+
+    return render_admin_layout("多渠道控制台", body, username=username, notice=notice, level=level)
+
+
+def render_channel_detail_page(
+    request: Request,
+    username: str,
+    channel: Dict[str, Any],
+    notice: str = "",
+    level: str = "success",
+) -> str:
+    external_base = str(request.base_url).rstrip("/")
+    checked = "checked" if channel["enabled"] else ""
+    body = f"""
+    <div class="grid dashboard">
+        <div class="card stack">
+            <div class="section-title">
+                <div>
+                    <h2>编辑渠道</h2>
+                    <p class="muted">更新上游地址、真实密钥、状态和描述。外部访问 key 可单独轮换。</p>
+                </div>
+                <a class="ghost-link" href="/admin">返回控制台</a>
+            </div>
+            <form method="post" action="/admin/channels/{channel['id']}" class="stack">
+                <div class="form-grid">
+                    <label>
+                        渠道名称
+                        <input type="text" name="name" value="{escape(channel['name'])}" required />
+                    </label>
+                    <label>
+                        上游基础 URL
+                        <input type="text" name="upstream_base_url" value="{escape(channel['upstream_base_url'])}" required />
+                    </label>
+                </div>
+                <div class="form-grid single">
+                    <label>
+                        新的上游 API Key
+                        <input type="text" name="upstream_api_key" placeholder="留空表示保持当前值不变" />
+                    </label>
+                </div>
+                <div class="form-grid single">
+                    <label>
+                        描述
+                        <textarea name="description">{escape(channel['description'])}</textarea>
+                    </label>
+                </div>
+                <label>
+                    <span>渠道状态</span>
+                    <span class="helper-text">勾选表示允许外部访问 key 命中该渠道。</span>
+                    <input type="checkbox" name="enabled" {checked} style="width: auto; margin-top: 6px;" />
+                </label>
+                <div class="button-row">
+                    <button class="primary-button" type="submit">保存渠道配置</button>
+                </div>
+            </form>
+        </div>
+        <div class="stack">
+            <div class="card stack">
+                <div class="section-title">
+                    <div>
+                        <h3>当前渠道信息</h3>
+                        <p class="muted">对外访问 key 和上游密钥解耦，外部只能看到访问 key。</p>
+                    </div>
+                </div>
+                <div>
+                    <div class="field-label">外部访问 Key</div>
+                    <div class="field-value">{escape(channel['access_key'])}</div>
+                </div>
+                <div>
+                    <div class="field-label">上游 API Key</div>
+                    <div class="field-value">{escape(mask_secret(channel['upstream_api_key']))}</div>
+                </div>
+                <div>
+                    <div class="field-label">创建时间</div>
+                    <div class="field-value">{escape(format_admin_time(channel['created_at']))}</div>
+                </div>
+                <div>
+                    <div class="field-label">最近更新</div>
+                    <div class="field-value">{escape(format_admin_time(channel['updated_at']))}</div>
+                </div>
+                <div class="button-row">
+                    <form method="post" action="/admin/channels/{channel['id']}/rotate-key">
+                        <button class="secondary-button" type="submit">轮换外部访问 Key</button>
+                    </form>
+                </div>
+            </div>
+            <div class="card stack">
+                <div class="section-title">
+                    <div>
+                        <h3>调用示例</h3>
+                        <p class="muted">外部系统始终调用当前代理服务，Authorization 使用渠道访问 key。</p>
+                    </div>
+                </div>
+                <div class="code-box">curl -X POST \"{external_base}/v1/chat/completions\" \\
+  -H \"Authorization: Bearer {escape(channel['access_key'])}\" \\
+  -H \"Content-Type: application/json\" \\
+    -d '{{\n    "model": "gpt-4.1",\n    "messages": [{{"role": "user", "content": "你好"}}]\n  }}'</div>
+            </div>
+        </div>
+    </div>
+    """
+
+    return render_admin_layout(
+        f"渠道详情 - {channel['name']}",
+        body,
+        username=username,
+        notice=notice,
+        level=level,
+    )
+
+
+async def parse_form_body(request: Request) -> Dict[str, str]:
+    raw_body = await request.body()
+    parsed = parse_qs(raw_body.decode("utf-8"), keep_blank_values=True)
+    return {key: values[-1] if values else "" for key, values in parsed.items()}
+
+
+def get_authenticated_admin(request: Request) -> Optional[str]:
+    session_manager: AdminSessionManager = request.app.state.admin_sessions
+    return session_manager.get_username(request.cookies.get(ADMIN_SESSION_COOKIE_NAME))
+
+
+def build_admin_redirect(path: str, message: str = "", level: str = "success") -> RedirectResponse:
+    if message:
+        separator = "&" if "?" in path else "?"
+        path = f"{path}{separator}notice={quote(message)}&level={quote(level)}"
+    return RedirectResponse(url=path, status_code=303)
+
+
+def build_login_redirect(next_path: str = "/admin") -> RedirectResponse:
+    return RedirectResponse(url=f"/admin/login?next={quote(next_path)}", status_code=303)
+
+
+def normalize_next_path(next_path: Optional[str]) -> str:
+    if next_path and next_path.startswith("/admin"):
+        return next_path
+    return "/admin"
+
+
+async def resolve_channel_from_request(request: Request, authorization: Optional[str]) -> Dict[str, Any]:
+    access_key = extract_bearer_token(authorization)
+    store: SettingsStore = request.app.state.settings_store
+    channel = await asyncio.to_thread(store.get_channel_by_access_key, access_key)
+
+    if not channel:
+        logger.warning("无效的渠道访问 key")
+        raise HTTPException(status_code=401, detail="Invalid channel access key")
+
+    if not channel["enabled"]:
+        logger.warning(f"渠道已停用: id={channel['id']}, name={channel['name']}")
+        raise HTTPException(status_code=403, detail="Channel is disabled")
+
+    return channel
+
+
 # ==================== FastAPI 应用 ====================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
+    app.state.settings_store = SettingsStore(
+        database_path=DATABASE_PATH,
+        default_admin_username=ADMIN_USERNAME,
+        default_admin_password=ADMIN_PASSWORD,
+        bootstrap_channel_url=RESPONSE_API_BASE,
+        bootstrap_channel_key=RESPONSE_API_KEY,
+        bootstrap_channel_name=BOOTSTRAP_CHANNEL_NAME,
+    )
+    await asyncio.to_thread(app.state.settings_store.initialize)
+    app.state.admin_sessions = AdminSessionManager(ADMIN_SESSION_TTL_SECONDS)
+
     # 配置连接池限制，防止长时间运行后连接泄漏
     limits = httpx.Limits(
         max_connections=MAX_CONNECTIONS,
@@ -678,6 +1327,7 @@ async def lifespan(app: FastAPI):
         limits=limits,
         http2=True  # 启用 HTTP/2 提升长连接性能
     )
+    logger.info(f"配置存储初始化完成: database={DATABASE_PATH}")
     logger.info(f"HTTP 客户端初始化: max_connections={MAX_CONNECTIONS}, keepalive={MAX_KEEPALIVE_CONNECTIONS}, expiry={KEEPALIVE_EXPIRY}s")
     yield
     await app.state.http_client.aclose()
@@ -730,7 +1380,10 @@ def build_passthrough_request_headers(request: Request, token: str) -> Dict[str,
             continue
         headers[key] = value
 
-    headers["Authorization"] = f"Bearer {token}"
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    else:
+        headers.pop("Authorization", None)
     return headers
 
 
@@ -744,14 +1397,248 @@ def build_passthrough_response_headers(headers: httpx.Headers) -> Dict[str, str]
     return filtered_headers
 
 
+@app.get("/")
+async def root_redirect():
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@app.get("/admin/login")
+async def admin_login_page(request: Request):
+    username = get_authenticated_admin(request)
+    if username:
+        return RedirectResponse(url="/admin", status_code=303)
+
+    next_path = normalize_next_path(request.query_params.get("next"))
+    error_message = request.query_params.get("error", "")
+    return HTMLResponse(
+        render_login_page(
+            error_message=error_message,
+            username=request.query_params.get("username", ""),
+            next_path=next_path,
+        )
+    )
+
+
+@app.post("/admin/login")
+async def admin_login_submit(request: Request):
+    form = await parse_form_body(request)
+    username = form.get("username", "").strip()
+    password = form.get("password", "")
+    next_path = normalize_next_path(form.get("next"))
+
+    store: SettingsStore = request.app.state.settings_store
+    is_valid = await asyncio.to_thread(store.authenticate_admin, username, password)
+    if not is_valid:
+        login_page = render_login_page(
+            error_message="账号或密码错误",
+            username=username,
+            next_path=next_path,
+        )
+        return HTMLResponse(login_page, status_code=401)
+
+    session_manager: AdminSessionManager = request.app.state.admin_sessions
+    session_token = session_manager.create_session(username)
+    response = RedirectResponse(url=next_path, status_code=303)
+    response.set_cookie(
+        key=ADMIN_SESSION_COOKIE_NAME,
+        value=session_token,
+        max_age=ADMIN_SESSION_TTL_SECONDS,
+        httponly=True,
+        samesite="lax",
+        secure=ADMIN_COOKIE_SECURE,
+        path="/",
+    )
+    return response
+
+
+@app.post("/admin/logout")
+async def admin_logout(request: Request):
+    session_manager: AdminSessionManager = request.app.state.admin_sessions
+    session_manager.revoke(request.cookies.get(ADMIN_SESSION_COOKIE_NAME))
+    response = RedirectResponse(url="/admin/login", status_code=303)
+    response.delete_cookie(ADMIN_SESSION_COOKIE_NAME, path="/")
+    return response
+
+
+@app.get("/admin")
+async def admin_dashboard(request: Request):
+    username = get_authenticated_admin(request)
+    if not username:
+        return build_login_redirect("/admin")
+
+    store: SettingsStore = request.app.state.settings_store
+    channels, stats = await asyncio.gather(
+        asyncio.to_thread(store.list_channels),
+        asyncio.to_thread(store.count_channels),
+    )
+    return HTMLResponse(
+        render_dashboard_page(
+            request=request,
+            username=username,
+            channels=channels,
+            stats=stats,
+            notice=request.query_params.get("notice", ""),
+            level=request.query_params.get("level", "success"),
+        )
+    )
+
+
+@app.get("/admin/channels/{channel_id}")
+async def admin_channel_detail(request: Request, channel_id: int):
+    username = get_authenticated_admin(request)
+    if not username:
+        return build_login_redirect(f"/admin/channels/{channel_id}")
+
+    store: SettingsStore = request.app.state.settings_store
+    channel = await asyncio.to_thread(store.get_channel, channel_id)
+    if not channel:
+        return build_admin_redirect("/admin", "渠道不存在", "error")
+
+    return HTMLResponse(
+        render_channel_detail_page(
+            request=request,
+            username=username,
+            channel=channel,
+            notice=request.query_params.get("notice", ""),
+            level=request.query_params.get("level", "success"),
+        )
+    )
+
+
+@app.post("/admin/channels")
+async def admin_create_channel(request: Request):
+    username = get_authenticated_admin(request)
+    if not username:
+        return build_login_redirect("/admin")
+
+    form = await parse_form_body(request)
+    store: SettingsStore = request.app.state.settings_store
+
+    try:
+        channel = await asyncio.to_thread(
+            store.create_channel,
+            form.get("name", ""),
+            form.get("upstream_base_url", ""),
+            form.get("upstream_api_key", ""),
+            form.get("description", ""),
+        )
+        return build_admin_redirect(
+            f"/admin/channels/{channel['id']}",
+            "渠道已创建，系统已自动生成外部访问 key",
+            "success",
+        )
+    except ValueError as exc:
+        return build_admin_redirect("/admin", str(exc), "error")
+
+
+@app.post("/admin/channels/{channel_id}")
+async def admin_update_channel(request: Request, channel_id: int):
+    username = get_authenticated_admin(request)
+    if not username:
+        return build_login_redirect(f"/admin/channels/{channel_id}")
+
+    form = await parse_form_body(request)
+    store: SettingsStore = request.app.state.settings_store
+
+    try:
+        channel = await asyncio.to_thread(
+            store.update_channel,
+            channel_id,
+            form.get("name", ""),
+            form.get("upstream_base_url", ""),
+            form.get("upstream_api_key", ""),
+            form.get("description", ""),
+            form.get("enabled") == "on",
+        )
+        if not channel:
+            return build_admin_redirect("/admin", "渠道不存在", "error")
+        return build_admin_redirect(f"/admin/channels/{channel_id}", "渠道配置已更新", "success")
+    except ValueError as exc:
+        return build_admin_redirect(f"/admin/channels/{channel_id}", str(exc), "error")
+
+
+@app.post("/admin/channels/{channel_id}/toggle")
+async def admin_toggle_channel(request: Request, channel_id: int):
+    username = get_authenticated_admin(request)
+    if not username:
+        return build_login_redirect("/admin")
+
+    form = await parse_form_body(request)
+    enabled = form.get("enabled") == "1"
+    store: SettingsStore = request.app.state.settings_store
+    channel = await asyncio.to_thread(store.set_channel_enabled, channel_id, enabled)
+    if not channel:
+        return build_admin_redirect("/admin", "渠道不存在", "error")
+
+    return build_admin_redirect(
+        "/admin",
+        f"渠道 {channel['name']} 已{'启用' if enabled else '停用'}",
+        "success",
+    )
+
+
+@app.post("/admin/channels/{channel_id}/rotate-key")
+async def admin_rotate_channel_key(request: Request, channel_id: int):
+    username = get_authenticated_admin(request)
+    if not username:
+        return build_login_redirect(f"/admin/channels/{channel_id}")
+
+    store: SettingsStore = request.app.state.settings_store
+    channel = await asyncio.to_thread(store.rotate_access_key, channel_id)
+    if not channel:
+        return build_admin_redirect("/admin", "渠道不存在", "error")
+
+    return build_admin_redirect(
+        f"/admin/channels/{channel_id}",
+        "外部访问 key 已轮换，请同步更新外部调用方配置",
+        "warning",
+    )
+
+
+@app.post("/admin/channels/{channel_id}/delete")
+async def admin_delete_channel(request: Request, channel_id: int):
+    username = get_authenticated_admin(request)
+    if not username:
+        return build_login_redirect("/admin")
+
+    store: SettingsStore = request.app.state.settings_store
+    deleted = await asyncio.to_thread(store.delete_channel, channel_id)
+    if not deleted:
+        return build_admin_redirect("/admin", "渠道不存在", "error")
+
+    return build_admin_redirect("/admin", "渠道已删除", "success")
+
+
+@app.post("/admin/change-password")
+async def admin_change_password(request: Request):
+    username = get_authenticated_admin(request)
+    if not username:
+        return build_login_redirect("/admin")
+
+    form = await parse_form_body(request)
+    new_password = form.get("new_password", "")
+    confirm_password = form.get("confirm_password", "")
+    if new_password != confirm_password:
+        return build_admin_redirect("/admin", "两次输入的新密码不一致", "error")
+
+    store: SettingsStore = request.app.state.settings_store
+    success, message = await asyncio.to_thread(
+        store.change_admin_password,
+        username,
+        form.get("current_password", ""),
+        new_password,
+    )
+    return build_admin_redirect("/admin", message, "success" if success else "error")
+
+
 @app.post("/v1/responses")
 async def responses_passthrough(
     request: Request,
     authorization: Optional[str] = Header(None)
 ):
     """Responses endpoint passthrough without request/response conversion."""
-    token = extract_bearer_token(authorization)
-    logger.debug(f"Token: {token[:10]}..." if len(token) > 10 else f"Token: {token}")
+    channel = await resolve_channel_from_request(request, authorization)
+    logger.info(f"/v1/responses 命中渠道: id={channel['id']}, name={channel['name']}")
 
     raw_body = await request.body()
     is_stream_request = "text/event-stream" in request.headers.get("accept", "").lower()
@@ -767,9 +1654,9 @@ async def responses_passthrough(
         logger.info("Received /v1/responses request: <empty body>")
 
     client: httpx.AsyncClient = request.app.state.http_client
-    upstream_url = f"{RESPONSE_API_BASE}/responses"
-    upstream_headers = build_passthrough_request_headers(request, token)
-    upstream_params = list(request.query_params.multi_items())
+    upstream_url = f"{channel['upstream_base_url']}/responses"
+    upstream_headers = build_passthrough_request_headers(request, channel["upstream_api_key"])
+    upstream_params = tuple(request.query_params.multi_items())
     stream_timeout = httpx.Timeout(
         connect=30.0,
         read=STREAM_READ_TIMEOUT,
@@ -873,14 +1760,9 @@ async def chat_completions(
     authorization: Optional[str] = Header(None)
 ):
     """Chat Completions 接口 - 转发到 Response API"""
-    
-    # 获取认证 token
-    if not authorization:
-        logger.warning("请求缺少 Authorization header")
-        raise HTTPException(status_code=401, detail="Missing Authorization header")
-    
-    token = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else authorization
-    logger.debug(f"Token: {token[:10]}..." if len(token) > 10 else f"Token: {token}")
+
+    channel = await resolve_channel_from_request(request, authorization)
+    logger.info(f"/v1/chat/completions 命中渠道: id={channel['id']}, name={channel['name']}")
     
     # 解析请求体
     try:
@@ -908,13 +1790,14 @@ async def chat_completions(
     
     # 准备请求头
     headers = {
-        "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "Accept": "text/event-stream"
     }
+    if channel["upstream_api_key"]:
+        headers["Authorization"] = f"Bearer {channel['upstream_api_key']}"
     
     # Response API URL
-    response_url = f"{RESPONSE_API_BASE}/responses"
+    response_url = f"{channel['upstream_base_url']}/responses"
     logger.info(f"转发到: {response_url}")
     
     if chat_request.stream:
@@ -923,7 +1806,7 @@ async def chat_completions(
         return await handle_stream_response(
             client, response_url, headers, response_request,
             chat_id, chat_request.model,
-            chat_request.stream_options.include_usage if chat_request.stream_options else False
+            bool(chat_request.stream_options.include_usage) if chat_request.stream_options else False
         )
     else:
         # 非流式模式：收集完整响应后返回
@@ -976,7 +1859,7 @@ async def handle_stream_response(
                     # 检查是否为需要返回 500 状态码的错误（让网关触发自动禁用）
                     # 包括：账户池无可用(503)、配额不足(402)
                     should_return_500 = False
-                    error_output = None
+                    error_output: Dict[str, Any]
                     try:
                         error_json = json.loads(error_msg)
                         error_code = error_json.get("error", {}).get("code")
@@ -1181,7 +2064,7 @@ async def handle_non_stream_response(
                 # 检查是否为需要返回 500 状态码的错误（让网关触发自动禁用）
                 # 包括：账户池无可用(503)、配额不足(402)
                 should_return_500 = False
-                error_output = None
+                error_output: Dict[str, Any]
                 try:
                     error_data = json.loads(error_text)
                     error_code = error_data.get("error", {}).get("code")
@@ -1304,6 +2187,7 @@ async def handle_non_stream_response(
 async def health_check(request: Request):
     """健康检查接口 - 包含连接池状态"""
     client: httpx.AsyncClient = request.app.state.http_client
+    store: SettingsStore = request.app.state.settings_store
     
     # 获取连接池统计信息
     pool_status = {}
@@ -1311,18 +2195,23 @@ async def health_check(request: Request):
         # httpx 的连接池信息
         if hasattr(client, '_transport') and client._transport:
             transport = client._transport
-            if hasattr(transport, '_pool'):
-                pool = transport._pool
+            pool = getattr(transport, '_pool', None)
+            if pool is not None:
+                pool_connections = getattr(pool, '_connections', None)
                 pool_status = {
-                    "connections_in_pool": len(pool._connections) if hasattr(pool, '_connections') else "unknown"
+                    "connections_in_pool": len(pool_connections) if pool_connections is not None else "unknown"
                 }
     except Exception as e:
         pool_status = {"error": str(e)}
+
+    channel_stats = await asyncio.to_thread(store.count_channels)
     
     return {
         "status": "ok", 
         "service": "response-to-chat-proxy",
         "pool_status": pool_status,
+        "database_path": DATABASE_PATH,
+        "channels": channel_stats,
         "config": {
             "max_connections": MAX_CONNECTIONS,
             "max_keepalive_connections": MAX_KEEPALIVE_CONNECTIONS,
@@ -1330,7 +2219,8 @@ async def health_check(request: Request):
             "default_timeout": DEFAULT_TIMEOUT,
             "pool_timeout": POOL_TIMEOUT,
             "stream_read_timeout": STREAM_READ_TIMEOUT,
-            "stream_max_duration": STREAM_MAX_DURATION
+            "stream_max_duration": STREAM_MAX_DURATION,
+            "bootstrap_channel_configured": bool(RESPONSE_API_BASE)
         }
     }
 
@@ -1341,16 +2231,16 @@ async def list_models(
     authorization: Optional[str] = Header(None)
 ):
     """模型列表接口 - 透传到上游"""
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing Authorization header")
-    
-    token = authorization.replace("Bearer ", "") if authorization.startswith("Bearer ") else authorization
+    channel = await resolve_channel_from_request(request, authorization)
     client: httpx.AsyncClient = request.app.state.http_client
+    headers: Dict[str, str] = {}
+    if channel["upstream_api_key"]:
+        headers["Authorization"] = f"Bearer {channel['upstream_api_key']}"
     
     try:
         response = await client.get(
-            f"{RESPONSE_API_BASE}/models",
-            headers={"Authorization": f"Bearer {token}"}
+            f"{channel['upstream_base_url']}/models",
+            headers=headers
         )
         return JSONResponse(
             status_code=response.status_code,

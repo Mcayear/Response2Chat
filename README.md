@@ -1,6 +1,6 @@
 # Response2Chat API Proxy
 
-一个将 OpenAI **Response API** 协议自动转换为 **Chat API** 协议的代理服务。
+一个将 OpenAI **Response API** 协议自动转换为 **Chat API** 协议的代理服务，现已支持多渠道路由和内置管理后台。
 
 ## 🎯 使用场景
 
@@ -13,11 +13,14 @@
 └─────────────────┘     └─────────────────────┘     └─────────────────┘
         ▲                       │
         │                       ▼
-   Chat API 格式           自动协议转换
+        渠道 Access Key         自动协议转换 + 渠道路由
 ```
 
 ## ✨ 功能特性
 
+      - ✅ **多渠道管理** - 每个渠道独立配置上游 URL、上游 Key、启停状态和说明
+      - ✅ **管理后台** - 内置管理员登录、渠道新增/编辑/删除/轮换 Key
+      - ✅ **渠道 Access Key** - 自动生成对外访问 Key，外部调用无需暴露真实上游 Key
 - ✅ **流式响应支持** - 完美支持 Chat API 的 stream 模式
 - ✅ **非流式响应支持** - 自动收集完整响应后返回
 - ✅ **工具调用转换** - 支持 Tool Calls / Function Calling
@@ -42,11 +45,23 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-**必须配置**：编辑 `.env` 文件，设置你的 Response API 地址：
+编辑 `.env` 文件。现在有两种初始化方式：
+
+- 只配置管理员账号，启动后登录后台手工创建渠道
+- 额外填写 `RESPONSE_API_BASE` 和 `RESPONSE_API_KEY`，让系统首次启动时自动创建一个引导渠道
 
 ```env
-# 【必填】Response API 基础 URL
+# 管理员账号，数据库第一次初始化时写入
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=admin123456
+
+# 可选：首次启动时自动创建一个默认渠道
 RESPONSE_API_BASE=https://your-response-api.com/v1
+RESPONSE_API_KEY=sk-your-upstream-key
+BOOTSTRAP_CHANNEL_NAME=默认渠道
+
+# SQLite 数据库文件
+DATABASE_PATH=data/response2chat.db
 
 # 服务监听配置
 HOST=0.0.0.0
@@ -74,7 +89,25 @@ Windows 用户也可以直接运行：
 start.bat
 ```
 
-### 4. 使用 Docker 部署
+### 4. 登录管理后台并创建渠道
+
+服务启动后，打开：
+
+```text
+http://localhost:8000/admin/login
+```
+
+使用 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 登录。进入控制台后可配置：
+
+- 渠道名称
+- 上游基础 URL
+- 上游 API Key
+- 渠道描述
+- 启停状态
+
+保存后系统会为该渠道自动生成一个对外访问的 `access_key`。
+
+### 5. 使用 Docker 部署
 
 #### 使用 Docker 直接构建
 
@@ -99,7 +132,7 @@ docker run -d \
 ```bash
 # 先配置 .env 文件
 cp .env.example .env
-# 编辑 .env 设置 RESPONSE_API_BASE
+# 编辑 .env，至少设置管理员账号；如需引导渠道再设置 RESPONSE_API_BASE
 
 # 构建并启动
 docker-compose up -d
@@ -113,13 +146,15 @@ docker-compose down
 
 ## 📖 API 使用
 
+所有外部客户端都调用当前代理服务，`Authorization` 里放的是系统生成的渠道 `access_key`，不是上游厂商的真实 API Key。
+
 ### Chat Completions
 
 完全兼容 OpenAI Chat API 格式：
 
 ```bash
 curl -X POST "http://localhost:8000/v1/chat/completions" \
-  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Authorization: Bearer CHANNEL_ACCESS_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-4",
@@ -134,7 +169,7 @@ curl -X POST "http://localhost:8000/v1/chat/completions" \
 
 ```bash
 curl -X POST "http://localhost:8000/v1/chat/completions" \
-  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Authorization: Bearer CHANNEL_ACCESS_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-4",
@@ -147,7 +182,7 @@ curl -X POST "http://localhost:8000/v1/chat/completions" \
 
 ```bash
 curl -X POST "http://localhost:8000/v1/chat/completions" \
-  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Authorization: Bearer CHANNEL_ACCESS_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-4",
@@ -163,7 +198,7 @@ curl -X POST "http://localhost:8000/v1/chat/completions" \
 
 ```bash
 curl -X POST "http://localhost:8000/v1/responses" \
-  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Authorization: Bearer CHANNEL_ACCESS_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-4.1",
@@ -183,18 +218,43 @@ curl http://localhost:8000/health
 ### 模型列表
 
 ```bash
-curl -H "Authorization: Bearer YOUR_API_KEY" http://localhost:8000/v1/models
+curl -H "Authorization: Bearer CHANNEL_ACCESS_KEY" http://localhost:8000/v1/models
 ```
 
 ## ⚙️ 配置说明
 
 
-| 环境变量                | 必填  | 说明                  | 默认值       |
-| ------------------- | --- | ------------------- | --------- |
-| `RESPONSE_API_BASE` | ✅ 是 | Response API 基础 URL | 无（必须配置）   |
-| `HOST`              | 否   | 服务监听地址              | `0.0.0.0` |
-| `PORT`              | 否   | 服务监听端口              | `8000`    |
-| `DEFAULT_TIMEOUT`   | 否   | 请求超时时间（秒）           | `300`     |
+| 环境变量 | 必填 | 说明 | 默认值 |
+| --- | --- | --- | --- |
+| `ADMIN_USERNAME` | 否 | 默认管理员用户名，仅首次初始化数据库时写入 | `admin` |
+| `ADMIN_PASSWORD` | 否 | 默认管理员密码，仅首次初始化数据库时写入 | `admin123456` |
+| `DATABASE_PATH` | 否 | SQLite 数据库文件路径 | `data/response2chat.db` |
+| `RESPONSE_API_BASE` | 否 | 引导渠道的上游基础 URL；留空表示不自动创建渠道 | 空 |
+| `RESPONSE_API_KEY` | 否 | 引导渠道的上游 API Key | 空 |
+| `BOOTSTRAP_CHANNEL_NAME` | 否 | 引导渠道名称 | `默认渠道` |
+| `ADMIN_SESSION_TTL_SECONDS` | 否 | 管理后台登录态有效期（秒） | `43200` |
+| `ADMIN_SESSION_COOKIE_NAME` | 否 | 管理后台 Cookie 名称 | `response2chat_admin_session` |
+| `ADMIN_COOKIE_SECURE` | 否 | 是否仅通过 HTTPS 下发管理后台 Cookie | `false` |
+| `HOST` | 否 | 服务监听地址 | `0.0.0.0` |
+| `PORT` | 否 | 服务监听端口 | `8000` |
+| `DEFAULT_TIMEOUT` | 否 | 普通请求读取超时（秒） | `300` |
+| `POOL_TIMEOUT` | 否 | 从连接池获取连接的超时（秒） | `10` |
+| `STREAM_READ_TIMEOUT` | 否 | 流式读取超时（秒） | `120` |
+| `STREAM_MAX_DURATION` | 否 | 单个流式请求最长持续时间，`0` 为不限制 | `0` |
+| `MAX_CONNECTIONS` | 否 | HTTP 连接池最大连接数 | `100` |
+| `MAX_KEEPALIVE_CONNECTIONS` | 否 | HTTP Keep-Alive 连接数 | `30` |
+| `KEEPALIVE_EXPIRY` | 否 | Keep-Alive 连接保留时间（秒） | `60` |
+| `DEFAULT_INSTRUCTIONS` | 否 | 默认系统提示词 | 空 |
+| `FORCE_DEFAULT_INSTRUCTIONS` | 否 | 即使已有 system 消息也强制附加默认提示词 | `false` |
+
+## 🖥️ 管理后台能力
+
+- 登录入口：`/admin/login`
+- 控制台首页：`/admin`
+- 渠道管理：新增、编辑、启停、删除、轮换外部访问 Key
+- 管理员密码：支持在控制台内修改
+
+对外访问时，代理会按 `Authorization: Bearer CHANNEL_ACCESS_KEY` 查找渠道，再将请求转发到该渠道绑定的真实上游 URL，并自动附上该渠道的真实上游 API Key。
 
 
 ## 🔄 参数映射
