@@ -15,6 +15,13 @@ import main
 import httpx
 from fastapi.testclient import TestClient
 
+
+def replace_http_client(app, handler):
+    current_client = app.state.http_client
+    if isinstance(current_client, httpx.AsyncClient):
+        asyncio.run(current_client.aclose())
+    app.state.http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
 def run_test():
     print("Starting verification...")
     try:
@@ -47,19 +54,19 @@ def run_test():
             channel_a = next((c for c in channels if c["name"] == "channel-a"), None)
             if channel_a:
                 access_key = channel_a["access_key"]
+                channel_id = channel_a["id"]
                 print(f"Step 7: Get access_key [PASS]")
             else:
                 print("Step 7: Get access_key [FAIL]")
                 return
 
             def mock_handler(request):
-                if str(request.url) == "https://example.com/v1/models" and request.headers.get("Authorization") == "Bearer upstream-secret":
+                if str(request.url) == "https://example.com/v1/models" and request.headers.get("Authorization") == "Bearer upstream-secret" and request.headers.get("User-Agent") == main.UPSTREAM_USER_AGENT:
                     return httpx.Response(200, json={ "data": [{"id": "model-a"}] })
                 return httpx.Response(404)
 
-            mock_transport = httpx.MockTransport(mock_handler)
             original_client = main.app.state.http_client
-            main.app.state.http_client = httpx.AsyncClient(transport=mock_transport)
+            replace_http_client(main.app, mock_handler)
 
             try:
                 resp = client.get("/v1/models", headers={"Authorization": f"Bearer {access_key}"})
@@ -73,8 +80,69 @@ def run_test():
                     print("Step 10: GET /v1/models with wrong key [PASS]")
                 else:
                     print(f"Step 10: GET /v1/models with wrong key [FAIL]")
+
+                update_data = {
+                    "name": "channel-a",
+                    "upstream_base_url": "https://example.com/v1",
+                    "upstream_api_key": "",
+                    "clear_upstream_api_key": "on",
+                    "description": "",
+                    "enabled": "on",
+                }
+                resp = client.post(f"/admin/channels/{channel_id}", data=update_data, follow_redirects=False)
+                updated_channel = main.app.state.settings_store.get_channel(channel_id)
+                if resp.status_code == 303 and updated_channel and updated_channel["upstream_api_key"] == "":
+                    print("Step 11: Clear upstream_api_key [PASS]")
+                else:
+                    print(f"Step 11: Clear upstream_api_key [FAIL] (Status: {resp.status_code})")
+
+                def no_auth_handler(request):
+                    if str(request.url) == "https://example.com/v1/models" and "Authorization" not in request.headers and request.headers.get("User-Agent") == main.UPSTREAM_USER_AGENT:
+                        return httpx.Response(200, json={"data": [{"id": "model-no-auth"}]})
+                    return httpx.Response(404)
+
+                replace_http_client(main.app, no_auth_handler)
+                resp = client.get("/v1/models", headers={"Authorization": f"Bearer {access_key}"})
+                if resp.status_code == 200 and resp.json()["data"][0]["id"] == "model-no-auth":
+                    print("Step 12: GET /v1/models after clearing upstream key [PASS]")
+                else:
+                    print(f"Step 12: GET /v1/models after clearing upstream key [FAIL] (Status: {resp.status_code})")
+
+                def non_json_handler(request):
+                    if str(request.url) == "https://example.com/v1/models" and request.headers.get("User-Agent") == main.UPSTREAM_USER_AGENT:
+                        return httpx.Response(502, text="upstream models unavailable", headers={"Content-Type": "text/plain; charset=utf-8"})
+                    return httpx.Response(404)
+
+                replace_http_client(main.app, non_json_handler)
+                resp = client.get("/v1/models", headers={"Authorization": f"Bearer {access_key}"})
+                if resp.status_code == 502 and resp.text == "upstream models unavailable":
+                    print("Step 13: GET /v1/models non-json passthrough [PASS]")
+                else:
+                    print(f"Step 13: GET /v1/models non-json passthrough [FAIL] (Status: {resp.status_code})")
+
+                def stream_error_handler(request):
+                    if str(request.url) == "https://example.com/v1/responses" and request.headers.get("User-Agent") == main.UPSTREAM_USER_AGENT:
+                        return httpx.Response(500, json={"error": {"message": "upstream stream failed", "code": "internal_error"}})
+                    return httpx.Response(404)
+
+                replace_http_client(main.app, stream_error_handler)
+                resp = client.post(
+                    "/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {access_key}"},
+                    json={
+                        "model": "gpt-4.1",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "stream": True,
+                    },
+                )
+                if resp.status_code == 500 and resp.json().get("error", {}).get("message") == "upstream stream failed":
+                    print("Step 14: Stream error status passthrough [PASS]")
+                else:
+                    print(f"Step 14: Stream error status passthrough [FAIL] (Status: {resp.status_code})")
             finally:
-                asyncio.run(main.app.state.http_client.aclose())
+                current_client = main.app.state.http_client
+                if isinstance(current_client, httpx.AsyncClient):
+                    asyncio.run(current_client.aclose())
                 main.app.state.http_client = original_client
     except Exception as e:
         print(f"Test failed: {e}")

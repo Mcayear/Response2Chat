@@ -47,6 +47,7 @@ ADMIN_SESSION_TTL_SECONDS = int(os.getenv("ADMIN_SESSION_TTL_SECONDS", str(12 * 
 ADMIN_SESSION_COOKIE_NAME = os.getenv("ADMIN_SESSION_COOKIE_NAME", "response2chat_admin_session")
 ADMIN_COOKIE_SECURE = os.getenv("ADMIN_COOKIE_SECURE", "false").lower() == "true"
 BOOTSTRAP_CHANNEL_NAME = os.getenv("BOOTSTRAP_CHANNEL_NAME", "默认渠道")
+UPSTREAM_USER_AGENT = "Codex Desktop/0.131.0-alpha.9 (Windows 10.0.26200; x86_64) unknown (Codex Desktop; 26.513.40821)"
 
 # 连接池配置 - 防止连接泄漏和资源耗尽
 MAX_CONNECTIONS = int(os.getenv("MAX_CONNECTIONS", "100"))  # 最大连接数
@@ -1178,6 +1179,11 @@ def render_channel_detail_page(
                         <input type="text" name="upstream_api_key" placeholder="留空表示保持当前值不变" />
                     </label>
                 </div>
+                <label>
+                    <span>清空当前上游 API Key</span>
+                    <span class="helper-text">如需切换为无鉴权上游，勾选此项后保存即可清空当前保存的上游密钥。</span>
+                    <input type="checkbox" name="clear_upstream_api_key" style="width: auto; margin-top: 6px;" />
+                </label>
                 <div class="form-grid single">
                     <label>
                         描述
@@ -1384,6 +1390,7 @@ def build_passthrough_request_headers(request: Request, token: str) -> Dict[str,
         headers["Authorization"] = f"Bearer {token}"
     else:
         headers.pop("Authorization", None)
+    headers["User-Agent"] = UPSTREAM_USER_AGENT
     return headers
 
 
@@ -1395,6 +1402,44 @@ def build_passthrough_response_headers(headers: httpx.Headers) -> Dict[str, str]
             continue
         filtered_headers[key] = value
     return filtered_headers
+
+
+def build_upstream_error_response(status_code: int, error_text: str) -> JSONResponse:
+    """Normalize upstream non-200 responses for downstream clients."""
+    should_return_500 = False
+    error_output: Dict[str, Any]
+
+    try:
+        error_output = json.loads(error_text)
+        error_code = error_output.get("error", {}).get("code")
+        error_message = error_output.get("error", {}).get("message", "")
+        if error_code == 503 or \
+           error_code == "plan_quota_exceeded" or \
+           "账户池都无可用" in error_message or \
+           status_code == 402:
+            should_return_500 = True
+    except json.JSONDecodeError:
+        if "账户池都无可用" in error_text:
+            should_return_500 = True
+        error_output = {
+            "error": {
+                "message": error_text,
+                "type": "upstream_error",
+                "code": str(status_code)
+            }
+        }
+
+    if status_code == 402:
+        should_return_500 = True
+
+    if should_return_500 and "error" in error_output:
+        error_output["error"]["upstream_status_code"] = status_code
+        error_output["error"]["gateway_status_code"] = 500
+
+    return JSONResponse(
+        status_code=500 if should_return_500 else status_code,
+        content=error_output
+    )
 
 
 @app.get("/")
@@ -1549,6 +1594,7 @@ async def admin_update_channel(request: Request, channel_id: int):
             form.get("upstream_api_key", ""),
             form.get("description", ""),
             form.get("enabled") == "on",
+            form.get("clear_upstream_api_key") == "on",
         )
         if not channel:
             return build_admin_redirect("/admin", "渠道不存在", "error")
@@ -1791,7 +1837,8 @@ async def chat_completions(
     # 准备请求头
     headers = {
         "Content-Type": "application/json",
-        "Accept": "text/event-stream"
+        "Accept": "text/event-stream",
+        "User-Agent": UPSTREAM_USER_AGENT,
     }
     if channel["upstream_api_key"]:
         headers["Authorization"] = f"Bearer {channel['upstream_api_key']}"
@@ -1825,155 +1872,143 @@ async def handle_stream_response(
     chat_id: str,
     model: str,
     include_usage: bool
-) -> StreamingResponse:
+) -> Response:
     """处理流式响应"""
-    
+
+    processor = ResponseStreamProcessor(chat_id, model, include_usage)
+    current_event_type = None
+    start_time = time.monotonic()
+    stream_context = client.stream(
+        "POST",
+        url,
+        headers=headers,
+        json=request_body,
+        timeout=httpx.Timeout(
+            connect=30.0,
+            read=STREAM_READ_TIMEOUT,
+            write=30.0,
+            pool=POOL_TIMEOUT
+        )
+    )
+    upstream_response: Optional[httpx.Response] = None
+    close_stream_context = True
+
+    try:
+        logger.debug(f"开始流式请求到 {url}")
+        upstream_response = await stream_context.__aenter__()
+        logger.info(f"上游响应状态码: {upstream_response.status_code}")
+        logger.debug(f"上游响应头: {dict(upstream_response.headers)}")
+
+        if upstream_response.status_code != 200:
+            error_body = await upstream_response.aread()
+            error_msg = error_body.decode("utf-8", errors="ignore")
+            logger.error(f"上游错误响应: {error_msg}")
+            return build_upstream_error_response(upstream_response.status_code, error_msg)
+
+        close_stream_context = False
+    except httpx.TimeoutException:
+        logger.error("请求超时")
+        return JSONResponse(
+            status_code=504,
+            content={
+                "error": {
+                    "message": "Request timeout",
+                    "type": "timeout_error"
+                }
+            }
+        )
+    except Exception as e:
+        logger.error(f"流式处理初始化异常: {str(e)}\n{traceback.format_exc()}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": {
+                    "message": str(e),
+                    "type": "internal_error"
+                }
+            }
+        )
+    finally:
+        if close_stream_context:
+            await stream_context.__aexit__(None, None, None)
+
     async def stream_generator():
-        processor = ResponseStreamProcessor(chat_id, model, include_usage)
-        current_event_type = None
-        response = None
-        start_time = time.monotonic()
-        
+        nonlocal current_event_type
         try:
-            logger.debug(f"开始流式请求到 {url}")
-            async with client.stream(
-                "POST",
-                url,
-                headers=headers,
-                json=request_body,
-                timeout=httpx.Timeout(
-                    connect=30.0,
-                    read=STREAM_READ_TIMEOUT,
-                    write=30.0,
-                    pool=POOL_TIMEOUT
-                )
-            ) as response:
-                logger.info(f"上游响应状态码: {response.status_code}")
-                logger.debug(f"上游响应头: {dict(response.headers)}")
-                
-                if response.status_code != 200:
-                    error_body = await response.aread()
-                    error_msg = error_body.decode("utf-8", errors="ignore")
-                    logger.error(f"上游错误响应: {error_msg}")
-                    
-                    # 检查是否为需要返回 500 状态码的错误（让网关触发自动禁用）
-                    # 包括：账户池无可用(503)、配额不足(402)
-                    should_return_500 = False
-                    error_output: Dict[str, Any]
-                    try:
-                        error_json = json.loads(error_msg)
-                        error_code = error_json.get("error", {}).get("code")
-                        error_message = error_json.get("error", {}).get("message", "")
-                        if error_code == 503 or \
-                           error_code == "plan_quota_exceeded" or \
-                           "账户池都无可用" in error_message or \
-                           response.status_code == 402:
-                            should_return_500 = True
-                        # 直接使用上游的错误响应
-                        error_output = error_json
-                    except:
-                        if "账户池都无可用" in error_msg:
-                            should_return_500 = True
-                        # JSON 解析失败，包装成标准格式
-                        error_output = {
-                            "error": {
-                                "message": error_msg,
-                                "type": "upstream_error",
-                                "code": str(response.status_code)
-                            }
+            if upstream_response is None:
+                return
+
+            async for line in upstream_response.aiter_lines():
+                if STREAM_MAX_DURATION > 0 and (time.monotonic() - start_time) > STREAM_MAX_DURATION:
+                    logger.error(f"流式请求超过最大持续时间: {STREAM_MAX_DURATION}s, chat_id={chat_id}")
+                    error_chunk = {
+                        "error": {
+                            "message": "Stream max duration exceeded",
+                            "type": "timeout_error"
                         }
-                    
-                    # 如果上游返回 402，也需要返回 500
-                    if response.status_code == 402:
-                        should_return_500 = True
-                    
-                    # 如果需要返回 500，在错误信息中添加标记
-                    if should_return_500 and "error" in error_output:
-                        error_output["error"]["upstream_status_code"] = response.status_code
-                        error_output["error"]["gateway_status_code"] = 500
-                    
-                    yield f"data: {json.dumps(error_output, ensure_ascii=False)}\n\n"
+                    }
+                    yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
                     return
-                
-                async for line in response.aiter_lines():
-                    if STREAM_MAX_DURATION > 0 and (time.monotonic() - start_time) > STREAM_MAX_DURATION:
-                        logger.error(f"流式请求超过最大持续时间: {STREAM_MAX_DURATION}s, chat_id={chat_id}")
-                        error_chunk = {
-                            "error": {
-                                "message": "Stream max duration exceeded",
-                                "type": "timeout_error"
-                            }
-                        }
-                        yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
+
+                line = line.strip()
+                if not line:
+                    continue
+
+                logger.debug(f"收到上游数据行: {line[:200]}..." if len(line) > 200 else f"收到上游数据行: {line}")
+
+                if line.startswith("event:"):
+                    current_event_type = line[6:].strip()
+                    logger.debug(f"事件类型: {current_event_type}")
+                elif line.startswith("data:"):
+                    data_str = line[5:].strip()
+                    if data_str == "[DONE]":
+                        final_response = processor.get_accumulated_response()
+                        logger.info(f"流式响应完成: {json.dumps(final_response, ensure_ascii=False)}")
+                        for chunk in processor.get_final_chunks():
+                            yield chunk
                         return
 
-                    line = line.strip()
-                    if not line:
-                        continue
-                    
-                    logger.debug(f"收到上游数据行: {line[:200]}..." if len(line) > 200 else f"收到上游数据行: {line}")
-                    
-                    if line.startswith("event:"):
-                        current_event_type = line[6:].strip()
-                        logger.debug(f"事件类型: {current_event_type}")
-                    elif line.startswith("data:"):
-                        data_str = line[5:].strip()
-                        if data_str == "[DONE]":
-                            final_response = processor.get_accumulated_response()
-                            logger.info(f"流式响应完成: {json.dumps(final_response, ensure_ascii=False)}")
-                            # 发送最终 chunks
-                            for chunk in processor.get_final_chunks():
-                                yield chunk
+                    try:
+                        event_data = json.loads(data_str)
+                        logger.debug(f"解析事件数据: type={event_data.get('type', current_event_type)}")
+
+                        if "error" in event_data:
+                            error_info = event_data.get("error", {})
+                            error_code = error_info.get("code")
+                            error_message = error_info.get("message", "")
+                            logger.error(f"上游错误响应: {json.dumps(event_data, ensure_ascii=False)}")
+
+                            should_return_500 = (error_code == 503 or 
+                                                 error_code == "503" or 
+                                                 error_code == "plan_quota_exceeded" or
+                                                 "账户池都无可用" in error_message or
+                                                 "quota" in error_message.lower())
+
+                            if should_return_500:
+                                event_data["error"]["gateway_status_code"] = 500
+
+                            yield f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
                             return
-                        
-                        try:
-                            event_data = json.loads(data_str)
-                            logger.debug(f"解析事件数据: type={event_data.get('type', current_event_type)}")
-                            
-                            # 检查是否为上游错误响应（如账户池无可用、配额不足）
-                            if "error" in event_data:
-                                error_info = event_data.get("error", {})
-                                error_code = error_info.get("code")
-                                error_message = error_info.get("message", "")
-                                logger.error(f"上游错误响应: {json.dumps(event_data, ensure_ascii=False)}")
-                                
-                                # 检查是否为需要返回 500 的错误（让网关触发自动禁用）
-                                # 包括：账户池无可用(503)、配额不足(plan_quota_exceeded)
-                                should_return_500 = (error_code == 503 or 
-                                                     error_code == "503" or 
-                                                     error_code == "plan_quota_exceeded" or
-                                                     "账户池都无可用" in error_message or
-                                                     "quota" in error_message.lower())
-                                
-                                # 直接透传上游的错误响应，添加状态码标记
-                                if should_return_500:
-                                    event_data["error"]["gateway_status_code"] = 500
-                                
-                                yield f"data: {json.dumps(event_data, ensure_ascii=False)}\n\n"
-                                return
-                            
-                            # 处理事件
-                            if current_event_type:
-                                chunks = processor.process_event(current_event_type, event_data)
-                                for chunk in chunks:
-                                    logger.debug(f"发送 chunk: {chunk[:100]}..." if len(chunk) > 100 else f"发送 chunk: {chunk}")
-                                    yield chunk
-                            # 也尝试从 data 中获取 type
-                            elif "type" in event_data:
-                                chunks = processor.process_event(event_data["type"], event_data)
-                                for chunk in chunks:
-                                    logger.debug(f"发送 chunk: {chunk[:100]}..." if len(chunk) > 100 else f"发送 chunk: {chunk}")
-                                    yield chunk
-                        except json.JSONDecodeError as e:
-                            logger.warning(f"JSON 解析失败: {e}, 原始数据: {data_str[:100]}")
-                            continue
-                
-                # 如果没有收到 [DONE]，手动发送结束
-                final_response = processor.get_accumulated_response()
-                logger.info(f"流结束: {json.dumps(final_response, ensure_ascii=False)}")
-                for chunk in processor.get_final_chunks():
-                    yield chunk
-                    
+
+                        if current_event_type:
+                            chunks = processor.process_event(current_event_type, event_data)
+                            for chunk in chunks:
+                                logger.debug(f"发送 chunk: {chunk[:100]}..." if len(chunk) > 100 else f"发送 chunk: {chunk}")
+                                yield chunk
+                        elif "type" in event_data:
+                            chunks = processor.process_event(event_data["type"], event_data)
+                            for chunk in chunks:
+                                logger.debug(f"发送 chunk: {chunk[:100]}..." if len(chunk) > 100 else f"发送 chunk: {chunk}")
+                                yield chunk
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"JSON 解析失败: {e}, 原始数据: {data_str[:100]}")
+                        continue
+
+            final_response = processor.get_accumulated_response()
+            logger.info(f"流结束: {json.dumps(final_response, ensure_ascii=False)}")
+            for chunk in processor.get_final_chunks():
+                yield chunk
+
         except httpx.TimeoutException:
             logger.error("请求超时")
             error_chunk = {
@@ -2003,7 +2038,6 @@ async def handle_stream_response(
             yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
         except asyncio.CancelledError:
             logger.warning(f"流式请求被取消 (客户端可能断开连接): chat_id={chat_id}")
-            # 不需要 yield 错误，客户端已断开
             return
         except GeneratorExit:
             logger.warning(f"生成器退出 (客户端断开): chat_id={chat_id}")
@@ -2019,9 +2053,11 @@ async def handle_stream_response(
             yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
         finally:
             logger.debug(f"流式生成器结束: chat_id={chat_id}")
-    
+            await stream_context.__aexit__(None, None, None)
+
     return StreamingResponse(
         stream_generator(),
+        status_code=upstream_response.status_code,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -2233,18 +2269,22 @@ async def list_models(
     """模型列表接口 - 透传到上游"""
     channel = await resolve_channel_from_request(request, authorization)
     client: httpx.AsyncClient = request.app.state.http_client
-    headers: Dict[str, str] = {}
+    headers: Dict[str, str] = {
+        "User-Agent": UPSTREAM_USER_AGENT,
+    }
     if channel["upstream_api_key"]:
         headers["Authorization"] = f"Bearer {channel['upstream_api_key']}"
     
     try:
         response = await client.get(
             f"{channel['upstream_base_url']}/models",
-            headers=headers
+            headers=headers,
+            params=tuple(request.query_params.multi_items())
         )
-        return JSONResponse(
+        return Response(
+            content=response.content,
             status_code=response.status_code,
-            content=response.json()
+            headers=build_passthrough_response_headers(response.headers)
         )
     except Exception as e:
         return JSONResponse(

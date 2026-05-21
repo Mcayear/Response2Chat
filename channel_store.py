@@ -344,6 +344,7 @@ class SettingsStore:
         upstream_api_key: Optional[str],
         description: str,
         enabled: bool,
+        clear_upstream_api_key: bool = False,
     ) -> Optional[Dict[str, Any]]:
         existing = self.get_channel(channel_id)
         if not existing:
@@ -355,7 +356,9 @@ class SettingsStore:
 
         normalized_url = normalize_base_url(base_url)
         next_upstream_api_key = existing["upstream_api_key"]
-        if upstream_api_key is not None and upstream_api_key.strip():
+        if clear_upstream_api_key:
+            next_upstream_api_key = ""
+        elif upstream_api_key is not None and upstream_api_key.strip():
             next_upstream_api_key = upstream_api_key.strip()
 
         with self._connect() as conn:
