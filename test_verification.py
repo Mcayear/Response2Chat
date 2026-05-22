@@ -45,10 +45,11 @@ def run_test():
 
             channel_data = {"name": "channel-a", "upstream_base_url": "https://example.com/v1", "upstream_api_key": "upstream-secret"}
             resp = client.post("/admin/channels", data=channel_data, follow_redirects=False)
-            if resp.status_code == 303:
+            location = resp.headers.get("location", "")
+            if resp.status_code == 303 and location.startswith("/admin?"):
                 print("Step 6: POST /admin/channels [PASS]")
             else:
-                print(f"Step 6: POST /admin/channels [FAIL] (Status: {resp.status_code})")
+                print(f"Step 6: POST /admin/channels [FAIL] (Status: {resp.status_code}, Location: {location})")
 
             channels = main.app.state.settings_store.list_channels()
             channel_a = next((c for c in channels if c["name"] == "channel-a"), None)

@@ -1164,7 +1164,7 @@ async def admin_create_channel(request: Request):
     store: SettingsStore = request.app.state.settings_store
 
     try:
-        channel = await asyncio.to_thread(
+        await asyncio.to_thread(
             store.create_channel,
             form.get("name", ""),
             form.get("upstream_base_url", ""),
@@ -1172,7 +1172,7 @@ async def admin_create_channel(request: Request):
             form.get("description", ""),
         )
         return build_admin_redirect(
-            f"/admin/channels/{channel['id']}",
+            "/admin",
             "渠道已创建，系统已自动生成外部访问 key",
             "success",
         )

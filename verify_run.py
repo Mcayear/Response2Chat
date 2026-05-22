@@ -37,16 +37,18 @@ def run_test():
             resp = client.post("/admin/login", data={"username": "admin", "password": "admin123456"}, follow_redirects=False)
             print(f"--- 5. POST /admin/login status: {resp.status_code}")
             assert resp.status_code == 303, "POST /admin/login should return 303"
-            cookie = resp.cookies.get("admin_session")
-            assert cookie is not None, f"Admin session cookie not found."
+            cookie_name = main.ADMIN_SESSION_COOKIE_NAME
+            cookie = client.cookies.get(cookie_name) or resp.cookies.get(cookie_name)
+            assert cookie is not None, f"Admin session cookie not found: {cookie_name}"
             
             # 5. POST /admin/channels 创建渠道
             resp = client.post("/admin/channels", 
                                data={"name": "channel-a", "upstream_base_url": "https://example.com/v1", "upstream_api_key": "upstream-secret"}, 
-                               cookies={"admin_session": cookie},
+                               cookies={cookie_name: cookie},
                                follow_redirects=False)
             print(f"--- 6. POST /admin/channels status: {resp.status_code}")
             assert resp.status_code == 303, "POST /admin/channels should return 303"
+            assert resp.headers.get("location", "").startswith("/admin?"), f"POST /admin/channels should redirect to /admin, got {resp.headers.get('location')}"
             
             # 6. 读取 access_key
             channels = client.app.state.settings_store.list_channels()
