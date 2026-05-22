@@ -3,6 +3,7 @@ import sys
 import shutil
 import tempfile
 import asyncio
+import json
 
 tmp_db_dir = tempfile.mkdtemp()
 tmp_db_path = os.path.join(tmp_db_dir, "test.db")
@@ -64,6 +65,14 @@ def run_test():
             def mock_handler(request):
                 if str(request.url) == "https://example.com/v1/models" and request.headers.get("Authorization") == "Bearer upstream-secret" and request.headers.get("User-Agent") == main.UPSTREAM_USER_AGENT:
                     return httpx.Response(200, json={ "data": [{"id": "model-a"}] })
+                if str(request.url) == "https://example.com/v1/responses" and request.method == "POST" and request.headers.get("Authorization") == "Bearer upstream-secret" and request.headers.get("User-Agent") == main.UPSTREAM_USER_AGENT:
+                    payload = json.loads(request.content.decode("utf-8"))
+                    if payload == {
+                        "model": main.ADMIN_TEST_MODEL,
+                        "input": main.ADMIN_TEST_INPUT,
+                        "stream": False,
+                    }:
+                        return httpx.Response(200, json={"id": "resp_test_123", "status": "completed"})
                 return httpx.Response(404)
 
             original_client = main.app.state.http_client
@@ -84,7 +93,7 @@ def run_test():
                 location = resp.headers.get("location", "")
                 if resp.status_code == 303 and location.startswith("/admin?notice="):
                     notice_page = client.get(location)
-                    if notice_page.status_code == 200 and "联通正常" in notice_page.text:
+                    if notice_page.status_code == 200 and "联通正常" in notice_page.text and main.ADMIN_TEST_MODEL in notice_page.text:
                         print("Step 10: POST /admin/channels/{id}/test [PASS]")
                     else:
                         print(f"Step 10: POST /admin/channels/{{id}}/test [FAIL] (Notice page: {notice_page.status_code})")

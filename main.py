@@ -53,6 +53,8 @@ ADMIN_SESSION_TTL_SECONDS = int(os.getenv("ADMIN_SESSION_TTL_SECONDS", str(12 * 
 ADMIN_SESSION_COOKIE_NAME = os.getenv("ADMIN_SESSION_COOKIE_NAME", "response2chat_admin_session")
 ADMIN_COOKIE_SECURE = os.getenv("ADMIN_COOKIE_SECURE", "false").lower() == "true"
 BOOTSTRAP_CHANNEL_NAME = os.getenv("BOOTSTRAP_CHANNEL_NAME", "默认渠道")
+ADMIN_TEST_MODEL = "gpt-5.4"
+ADMIN_TEST_INPUT = "ping"
 UPSTREAM_USER_AGENT = "Codex Desktop/0.131.0-alpha.9 (Windows 10.0.26200; x86_64) unknown (Codex Desktop; 26.513.40821)"
 
 # 连接池配置 - 防止连接泄漏和资源耗尽
@@ -1221,19 +1223,34 @@ async def admin_test_channel(request: Request, channel_id: int):
         return build_admin_redirect("/admin", "渠道不存在", "error")
 
     client: httpx.AsyncClient = request.app.state.http_client
+    test_payload = {
+        "model": ADMIN_TEST_MODEL,
+        "input": ADMIN_TEST_INPUT,
+        "stream": False,
+    }
     try:
-        response = await client.get(
-            f"{channel['upstream_base_url']}/models",
-            headers=build_channel_upstream_headers(channel),
+        response = await client.post(
+            f"{channel['upstream_base_url']}/responses",
+            headers=build_channel_upstream_headers(
+                channel,
+                {
+                    "Accept": "application/json",
+                },
+            ),
+            json=test_payload,
         )
     except httpx.TimeoutException:
-        return build_admin_redirect(return_path, f"渠道 {channel['name']} 联通测试超时", "error")
+        return build_admin_redirect(
+            return_path,
+            f"渠道 {channel['name']} 联通测试超时：调用 {ADMIN_TEST_MODEL} 未在限定时间内返回",
+            "error",
+        )
     except httpx.HTTPError as exc:
         return build_admin_redirect(return_path, f"渠道 {channel['name']} 联通测试失败：{exc}", "error")
 
     summary = summarize_upstream_response(response)
     if response.is_success:
-        message = f"渠道 {channel['name']} 联通正常"
+        message = f"渠道 {channel['name']} 联通正常，{ADMIN_TEST_MODEL} 调用成功"
         if summary:
             message = f"{message}，{summary}"
         return build_admin_redirect(return_path, message, "success")
@@ -1242,10 +1259,14 @@ async def admin_test_channel(request: Request, channel_id: int):
     if response.status_code in (401, 403):
         failure_reason = f"HTTP {response.status_code}，上游鉴权失败"
     elif response.status_code == 404:
-        failure_reason = "HTTP 404，上游未提供 /models 接口"
+        failure_reason = "HTTP 404，上游未提供 /responses 接口"
     if summary:
         failure_reason = f"{failure_reason}，{summary}"
-    return build_admin_redirect(return_path, f"渠道 {channel['name']} 联通失败：{failure_reason}", "error")
+    return build_admin_redirect(
+        return_path,
+        f"渠道 {channel['name']} 联通失败：{ADMIN_TEST_MODEL} 调用未通过，{failure_reason}",
+        "error",
+    )
 
 
 @app.post("/admin/channels/{channel_id}/toggle")
