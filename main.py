@@ -10,7 +10,10 @@ import uuid
 import asyncio
 import logging
 import traceback
+from functools import lru_cache
 from html import escape
+from pathlib import Path
+from string import Template
 from typing import Optional, List, Dict, Any, Union
 from contextlib import asynccontextmanager
 from urllib.parse import parse_qs, quote
@@ -24,6 +27,9 @@ from dotenv import load_dotenv
 from channel_store import AdminSessionManager, SettingsStore, mask_secret
 
 load_dotenv()
+
+BASE_DIR = Path(__file__).resolve().parent
+TEMPLATE_DIR = BASE_DIR / "templates"
 
 # ==================== 日志配置 ====================
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -685,6 +691,20 @@ def build_admin_notice(message: str, level: str) -> str:
     return f'<div class="notice {level_class}">{escape(message)}</div>'
 
 
+@lru_cache(maxsize=None)
+def load_html_template(template_name: str) -> Template:
+    template_path = TEMPLATE_DIR / template_name
+    return Template(template_path.read_text(encoding="utf-8"))
+
+
+def render_html_template(template_name: str, **context: Any) -> str:
+    normalized_context = {
+        key: "" if value is None else str(value)
+        for key, value in context.items()
+    }
+    return load_html_template(template_name).safe_substitute(normalized_context)
+
+
 def render_admin_layout(
     title: str,
     content: str,
@@ -704,263 +724,21 @@ def render_admin_layout(
         </div>
         """
 
-    return f"""
-    <!DOCTYPE html>
-    <html lang="zh-CN">
-    <head>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>{escape(title)}</title>
-        <style>
-            :root {{
-                --bg: #f4efe7;
-                --bg-accent: #fff8ef;
-                --card: rgba(255, 252, 247, 0.86);
-                --text: #1f2937;
-                --muted: #5b6472;
-                --line: rgba(74, 62, 46, 0.12);
-                --primary: #0f766e;
-                --primary-strong: #115e59;
-                --danger: #b42318;
-                --warning: #b45309;
-                --success-bg: rgba(15, 118, 110, 0.12);
-                --danger-bg: rgba(180, 35, 24, 0.1);
-                --warning-bg: rgba(180, 83, 9, 0.12);
-                --shadow: 0 20px 60px rgba(61, 41, 20, 0.12);
-                --radius: 22px;
-            }}
-            * {{ box-sizing: border-box; }}
-            body {{
-                margin: 0;
-                color: var(--text);
-                font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-                background:
-                    radial-gradient(circle at top left, rgba(15, 118, 110, 0.16), transparent 28%),
-                    radial-gradient(circle at top right, rgba(180, 83, 9, 0.18), transparent 24%),
-                    linear-gradient(180deg, var(--bg-accent), var(--bg));
-                min-height: 100vh;
-            }}
-            a {{ color: inherit; }}
-            .page {{ max-width: 1240px; margin: 0 auto; padding: 32px 20px 40px; }}
-            .topbar {{
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                gap: 16px;
-                margin-bottom: 24px;
-            }}
-            .brand {{
-                display: flex;
-                flex-direction: column;
-                gap: 6px;
-            }}
-            .eyebrow {{
-                margin: 0;
-                color: var(--primary-strong);
-                font-size: 13px;
-                font-weight: 700;
-                letter-spacing: 0.08em;
-                text-transform: uppercase;
-            }}
-            h1 {{ margin: 0; font-size: clamp(28px, 4vw, 42px); line-height: 1.05; }}
-            .subtitle {{ margin: 0; color: var(--muted); font-size: 15px; }}
-            .topbar-actions {{
-                display: flex;
-                align-items: center;
-                justify-content: flex-end;
-                flex-wrap: wrap;
-                gap: 10px;
-            }}
-            .badge {{
-                display: inline-flex;
-                align-items: center;
-                gap: 8px;
-                padding: 10px 14px;
-                border-radius: 999px;
-                background: rgba(15, 118, 110, 0.1);
-                color: var(--primary-strong);
-                font-size: 13px;
-                font-weight: 700;
-            }}
-            .ghost-link,
-            .ghost-button {{
-                border: 1px solid var(--line);
-                border-radius: 999px;
-                padding: 10px 14px;
-                background: rgba(255, 255, 255, 0.65);
-                color: var(--text);
-                text-decoration: none;
-                cursor: pointer;
-                font-size: 14px;
-            }}
-            .ghost-button:hover,
-            .ghost-link:hover {{ border-color: rgba(15, 118, 110, 0.45); }}
-            .notice {{
-                margin-bottom: 18px;
-                padding: 14px 16px;
-                border-radius: 16px;
-                border: 1px solid transparent;
-                font-size: 14px;
-            }}
-            .notice-success {{ background: var(--success-bg); border-color: rgba(15, 118, 110, 0.24); }}
-            .notice-error {{ background: var(--danger-bg); border-color: rgba(180, 35, 24, 0.22); }}
-            .notice-warning {{ background: var(--warning-bg); border-color: rgba(180, 83, 9, 0.22); }}
-            .grid {{ display: grid; gap: 18px; }}
-            .dashboard {{ grid-template-columns: 1.2fr 0.8fr; align-items: start; }}
-            .stats {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
-            .card {{
-                background: var(--card);
-                border: 1px solid rgba(255, 255, 255, 0.8);
-                box-shadow: var(--shadow);
-                backdrop-filter: blur(14px);
-                border-radius: var(--radius);
-                padding: 22px;
-            }}
-            .section-title {{
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                gap: 12px;
-                margin-bottom: 18px;
-            }}
-            .section-title h2,
-            .section-title h3 {{ margin: 0; font-size: 20px; }}
-            .muted {{ color: var(--muted); font-size: 13px; line-height: 1.5; }}
-            .stat-label {{ color: var(--muted); font-size: 13px; margin-bottom: 8px; }}
-            .stat-value {{ font-size: 32px; font-weight: 800; line-height: 1; }}
-            .stat-footnote {{ color: var(--muted); font-size: 12px; margin-top: 10px; }}
-            form {{ margin: 0; }}
-            .form-grid {{ display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); }}
-            .form-grid.single {{ grid-template-columns: 1fr; }}
-            label {{ display: flex; flex-direction: column; gap: 8px; font-size: 14px; font-weight: 600; }}
-            input,
-            textarea {{
-                width: 100%;
-                border: 1px solid var(--line);
-                border-radius: 14px;
-                padding: 12px 14px;
-                font: inherit;
-                color: var(--text);
-                background: rgba(255, 255, 255, 0.92);
-            }}
-            textarea {{ min-height: 108px; resize: vertical; }}
-            input:focus,
-            textarea:focus {{ outline: 2px solid rgba(15, 118, 110, 0.18); border-color: rgba(15, 118, 110, 0.4); }}
-            .button-row {{ display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }}
-            .primary-button,
-            .secondary-button,
-            .danger-button {{
-                border: none;
-                border-radius: 14px;
-                padding: 12px 16px;
-                font: inherit;
-                font-weight: 700;
-                cursor: pointer;
-            }}
-            .primary-button {{ background: var(--primary); color: #fff; }}
-            .secondary-button {{ background: rgba(15, 118, 110, 0.1); color: var(--primary-strong); }}
-            .danger-button {{ background: rgba(180, 35, 24, 0.12); color: var(--danger); }}
-            .primary-button:hover {{ background: var(--primary-strong); }}
-            .secondary-button:hover {{ background: rgba(15, 118, 110, 0.18); }}
-            .danger-button:hover {{ background: rgba(180, 35, 24, 0.2); }}
-            .stack {{ display: flex; flex-direction: column; gap: 14px; }}
-            .channel-list {{ display: flex; flex-direction: column; gap: 14px; }}
-            .channel-item {{
-                border: 1px solid var(--line);
-                border-radius: 18px;
-                padding: 16px;
-                background: rgba(255, 255, 255, 0.7);
-            }}
-            .channel-head {{
-                display: flex;
-                align-items: flex-start;
-                justify-content: space-between;
-                gap: 14px;
-                margin-bottom: 12px;
-            }}
-            .channel-meta {{ display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 14px; }}
-            .field-label {{ color: var(--muted); font-size: 12px; margin-bottom: 6px; }}
-            .field-value {{ font-size: 14px; line-height: 1.5; word-break: break-all; }}
-            .pill {{
-                display: inline-flex;
-                align-items: center;
-                justify-content: center;
-                border-radius: 999px;
-                padding: 8px 12px;
-                font-size: 12px;
-                font-weight: 700;
-            }}
-            .pill-enabled {{ background: rgba(15, 118, 110, 0.12); color: var(--primary-strong); }}
-            .pill-disabled {{ background: rgba(180, 35, 24, 0.12); color: var(--danger); }}
-            .action-row {{ display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }}
-            .action-row form {{ display: inline-flex; }}
-            .code-box {{
-                margin-top: 14px;
-                border-radius: 16px;
-                padding: 14px;
-                background: #12211e;
-                color: #def7ec;
-                font-size: 13px;
-                line-height: 1.6;
-                overflow-x: auto;
-            }}
-            .login-shell {{ max-width: 480px; margin: 8vh auto 0; }}
-            .login-shell .card {{ padding: 28px; }}
-            .helper-text {{ color: var(--muted); font-size: 13px; line-height: 1.6; }}
-            @media (max-width: 960px) {{
-                .dashboard,
-                .stats,
-                .form-grid,
-                .channel-meta {{ grid-template-columns: 1fr; }}
-                .topbar {{ align-items: flex-start; flex-direction: column; }}
-                .topbar-actions {{ justify-content: flex-start; }}
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="page">
-            <div class="topbar">
-                <div class="brand">
-                    <p class="eyebrow">Response2Chat Console</p>
-                    <h1>{escape(title)}</h1>
-                    <p class="subtitle">多渠道路由、管理员登录和外部访问 key 统一配置。</p>
-                </div>
-                {nav_html}
-            </div>
-            {build_admin_notice(notice, level)}
-            {content}
-        </div>
-    </body>
-    </html>
-    """
+    return render_html_template(
+        "admin_layout.html",
+        title=escape(title),
+        nav_html=nav_html,
+        notice_html=build_admin_notice(notice, level),
+        content_html=content,
+    )
 
 
 def render_login_page(error_message: str = "", username: str = "", next_path: str = "/admin") -> str:
-    body = f"""
-    <div class="login-shell">
-        <div class="card stack">
-            <div class="section-title">
-                <div>
-                    <h2>管理员登录</h2>
-                    <p class="muted">使用默认管理员账号进入控制台，首次登录后建议立即修改密码。</p>
-                </div>
-            </div>
-            <form method="post" action="/admin/login" class="stack">
-                <input type="hidden" name="next" value="{escape(next_path)}" />
-                <label>
-                    用户名
-                    <input type="text" name="username" autocomplete="username" value="{escape(username)}" placeholder="admin" required />
-                </label>
-                <label>
-                    密码
-                    <input type="password" name="password" autocomplete="current-password" placeholder="请输入管理员密码" required />
-                </label>
-                <button class="primary-button" type="submit">登录控制台</button>
-            </form>
-            <p class="helper-text">默认账号密码可通过环境变量 ADMIN_USERNAME 和 ADMIN_PASSWORD 初始化。系统只会在第一次创建数据库时写入默认管理员。</p>
-        </div>
-    </div>
-    """
+    body = render_html_template(
+        "admin_login.html",
+        next_path=escape(next_path),
+        username=escape(username),
+    )
     return render_admin_layout("管理后台登录", body, notice=error_message, level="error" if error_message else "success")
 
 
@@ -993,152 +771,31 @@ def render_dashboard_page(
                 )
             )
             channel_cards.append(
-                f"""
-                <div class="channel-item">
-                    <div class="channel-head">
-                        <div>
-                            <h3>{escape(channel['name'])}</h3>
-                            <p class="muted">{description}</p>
-                        </div>
-                        <span class="pill {state_class}">{state_text}</span>
-                    </div>
-                    <div class="channel-meta">
-                        <div>
-                            <div class="field-label">上游地址</div>
-                            <div class="field-value">{escape(channel['upstream_base_url'])}</div>
-                        </div>
-                        <div>
-                            <div class="field-label">上游密钥</div>
-                            <div class="field-value">{escape(mask_secret(channel['upstream_api_key']))}</div>
-                        </div>
-                        <div>
-                            <div class="field-label">外部访问 Key</div>
-                            <div class="field-value">{escape(channel['access_key'])}</div>
-                        </div>
-                        <div>
-                            <div class="field-label">最近更新</div>
-                            <div class="field-value">{escape(format_admin_time(channel['updated_at']))}</div>
-                        </div>
-                    </div>
-                    <div class="action-row">
-                        <a class="ghost-link" href="/admin/channels/{channel['id']}">编辑配置</a>
-                        <form method="post" action="/admin/channels/{channel['id']}/toggle">
-                            <input type="hidden" name="enabled" value="{toggle_target}" />
-                            <button class="secondary-button" type="submit">{toggle_label}</button>
-                        </form>
-                        <form method="post" action="/admin/channels/{channel['id']}/rotate-key">
-                            <button class="secondary-button" type="submit">轮换外部 Key</button>
-                        </form>
-                        <form method="post" action="/admin/channels/{channel['id']}/delete" onsubmit="return confirm('确认删除这个渠道吗？');">
-                            <button class="danger-button" type="submit">删除</button>
-                        </form>
-                    </div>
-                    <div class="code-box">POST {external_base}/v1/chat/completions\nAuthorization: Bearer {escape(channel['access_key'])}\nContent-Type: application/json\n\n{example}</div>
-                </div>
-                """
+                render_html_template(
+                    "admin_channel_card.html",
+                    channel_name=escape(channel["name"]),
+                    description=description,
+                    state_class=state_class,
+                    state_text=state_text,
+                    upstream_base_url=escape(channel["upstream_base_url"]),
+                    upstream_api_key_masked=escape(mask_secret(channel["upstream_api_key"])),
+                    access_key=escape(channel["access_key"]),
+                    updated_at=escape(format_admin_time(channel["updated_at"])),
+                    channel_id=channel["id"],
+                    toggle_target=toggle_target,
+                    toggle_label=toggle_label,
+                    external_base=external_base,
+                    example_request=example,
+                )
             )
 
-    body = f"""
-    <div class="grid stats">
-        <div class="card">
-            <div class="stat-label">渠道总数</div>
-            <div class="stat-value">{stats['total']}</div>
-            <div class="stat-footnote">所有已创建渠道</div>
-        </div>
-        <div class="card">
-            <div class="stat-label">已启用</div>
-            <div class="stat-value">{stats['enabled']}</div>
-            <div class="stat-footnote">可供外部调用的渠道</div>
-        </div>
-        <div class="card">
-            <div class="stat-label">已停用</div>
-            <div class="stat-value">{stats['disabled']}</div>
-            <div class="stat-footnote">保留配置但不接受调用</div>
-        </div>
-    </div>
-    <div class="grid dashboard" style="margin-top: 18px;">
-        <div class="card stack">
-            <div class="section-title">
-                <div>
-                    <h2>新增渠道</h2>
-                    <p class="muted">填写上游 Response API 地址和真实密钥，保存后系统会自动生成对外访问 key。</p>
-                </div>
-            </div>
-            <form method="post" action="/admin/channels" class="stack">
-                <div class="form-grid">
-                    <label>
-                        渠道名称
-                        <input type="text" name="name" placeholder="例如：主账号 A" required />
-                    </label>
-                    <label>
-                        上游基础 URL
-                        <input type="text" name="upstream_base_url" placeholder="https://your-provider.com/v1" required />
-                    </label>
-                </div>
-                <div class="form-grid single">
-                    <label>
-                        上游 API Key
-                        <input type="text" name="upstream_api_key" placeholder="sk-...，可留空表示不上送 Authorization" />
-                    </label>
-                </div>
-                <div class="form-grid single">
-                    <label>
-                        描述
-                        <textarea name="description" placeholder="可选，记录渠道归属或用途"></textarea>
-                    </label>
-                </div>
-                <div class="button-row">
-                    <button class="primary-button" type="submit">创建渠道并生成外部 Key</button>
-                </div>
-            </form>
-        </div>
-        <div class="stack">
-            <div class="card stack">
-                <div class="section-title">
-                    <div>
-                        <h3>修改管理员密码</h3>
-                        <p class="muted">默认密码只用于初始化。数据库生成后，环境变量不会覆盖已修改的管理员密码。</p>
-                    </div>
-                </div>
-                <form method="post" action="/admin/change-password" class="stack">
-                    <label>
-                        当前密码
-                        <input type="password" name="current_password" autocomplete="current-password" required />
-                    </label>
-                    <label>
-                        新密码
-                        <input type="password" name="new_password" autocomplete="new-password" minlength="8" required />
-                    </label>
-                    <label>
-                        确认新密码
-                        <input type="password" name="confirm_password" autocomplete="new-password" minlength="8" required />
-                    </label>
-                    <button class="primary-button" type="submit">更新管理员密码</button>
-                </form>
-            </div>
-            <div class="card stack">
-                <div class="section-title">
-                    <div>
-                        <h3>调用规则</h3>
-                        <p class="muted">外部客户端使用系统生成的访问 key 调用代理，代理再自动切换到对应渠道的真实 URL 和上游密钥。</p>
-                    </div>
-                </div>
-                <div class="helper-text">调用地址保持不变：/v1/chat/completions、/v1/responses、/v1/models。区别只在 Authorization 里放的是渠道访问 key，而不是上游服务的真实 key。</div>
-            </div>
-        </div>
-    </div>
-    <div class="card" style="margin-top: 18px;">
-        <div class="section-title">
-            <div>
-                <h2>渠道列表</h2>
-                <p class="muted">每个渠道都有独立的上游地址、真实密钥和对外访问 key。</p>
-            </div>
-        </div>
-        <div class="channel-list">
-            {''.join(channel_cards) if channel_cards else '<div class="channel-item"><p class="muted">当前还没有渠道，请先创建一个。</p></div>'}
-        </div>
-    </div>
-    """
+    body = render_html_template(
+        "admin_dashboard.html",
+        stats_total=stats["total"],
+        stats_enabled=stats["enabled"],
+        stats_disabled=stats["disabled"],
+        channel_cards_html="".join(channel_cards) if channel_cards else '<div class="channel-item"><p class="muted">当前还没有渠道，请先创建一个。</p></div>',
+    )
 
     return render_admin_layout("多渠道控制台", body, username=username, notice=notice, level=level)
 
@@ -1152,99 +809,32 @@ def render_channel_detail_page(
 ) -> str:
     external_base = str(request.base_url).rstrip("/")
     checked = "checked" if channel["enabled"] else ""
-    body = f"""
-    <div class="grid dashboard">
-        <div class="card stack">
-            <div class="section-title">
-                <div>
-                    <h2>编辑渠道</h2>
-                    <p class="muted">更新上游地址、真实密钥、状态和描述。外部访问 key 可单独轮换。</p>
-                </div>
-                <a class="ghost-link" href="/admin">返回控制台</a>
-            </div>
-            <form method="post" action="/admin/channels/{channel['id']}" class="stack">
-                <div class="form-grid">
-                    <label>
-                        渠道名称
-                        <input type="text" name="name" value="{escape(channel['name'])}" required />
-                    </label>
-                    <label>
-                        上游基础 URL
-                        <input type="text" name="upstream_base_url" value="{escape(channel['upstream_base_url'])}" required />
-                    </label>
-                </div>
-                <div class="form-grid single">
-                    <label>
-                        新的上游 API Key
-                        <input type="text" name="upstream_api_key" placeholder="留空表示保持当前值不变" />
-                    </label>
-                </div>
-                <label>
-                    <span>清空当前上游 API Key</span>
-                    <span class="helper-text">如需切换为无鉴权上游，勾选此项后保存即可清空当前保存的上游密钥。</span>
-                    <input type="checkbox" name="clear_upstream_api_key" style="width: auto; margin-top: 6px;" />
-                </label>
-                <div class="form-grid single">
-                    <label>
-                        描述
-                        <textarea name="description">{escape(channel['description'])}</textarea>
-                    </label>
-                </div>
-                <label>
-                    <span>渠道状态</span>
-                    <span class="helper-text">勾选表示允许外部访问 key 命中该渠道。</span>
-                    <input type="checkbox" name="enabled" {checked} style="width: auto; margin-top: 6px;" />
-                </label>
-                <div class="button-row">
-                    <button class="primary-button" type="submit">保存渠道配置</button>
-                </div>
-            </form>
-        </div>
-        <div class="stack">
-            <div class="card stack">
-                <div class="section-title">
-                    <div>
-                        <h3>当前渠道信息</h3>
-                        <p class="muted">对外访问 key 和上游密钥解耦，外部只能看到访问 key。</p>
-                    </div>
-                </div>
-                <div>
-                    <div class="field-label">外部访问 Key</div>
-                    <div class="field-value">{escape(channel['access_key'])}</div>
-                </div>
-                <div>
-                    <div class="field-label">上游 API Key</div>
-                    <div class="field-value">{escape(mask_secret(channel['upstream_api_key']))}</div>
-                </div>
-                <div>
-                    <div class="field-label">创建时间</div>
-                    <div class="field-value">{escape(format_admin_time(channel['created_at']))}</div>
-                </div>
-                <div>
-                    <div class="field-label">最近更新</div>
-                    <div class="field-value">{escape(format_admin_time(channel['updated_at']))}</div>
-                </div>
-                <div class="button-row">
-                    <form method="post" action="/admin/channels/{channel['id']}/rotate-key">
-                        <button class="secondary-button" type="submit">轮换外部访问 Key</button>
-                    </form>
-                </div>
-            </div>
-            <div class="card stack">
-                <div class="section-title">
-                    <div>
-                        <h3>调用示例</h3>
-                        <p class="muted">外部系统始终调用当前代理服务，Authorization 使用渠道访问 key。</p>
-                    </div>
-                </div>
-                <div class="code-box">curl -X POST \"{external_base}/v1/chat/completions\" \\
-  -H \"Authorization: Bearer {escape(channel['access_key'])}\" \\
-  -H \"Content-Type: application/json\" \\
-    -d '{{\n    "model": "gpt-4.1",\n    "messages": [{{"role": "user", "content": "你好"}}]\n  }}'</div>
-            </div>
-        </div>
-    </div>
-    """
+    curl_example = escape(
+        "\n".join(
+            [
+                f'curl -X POST "{external_base}/v1/chat/completions" \\',
+                f'  -H "Authorization: Bearer {channel["access_key"]}" \\',
+                '  -H "Content-Type: application/json" \\',
+                '  -d \'{',
+                '    "model": "gpt-4.1",',
+                '    "messages": [{"role": "user", "content": "你好"}]',
+                "  }'",
+            ]
+        )
+    )
+    body = render_html_template(
+        "admin_channel_detail.html",
+        channel_id=channel["id"],
+        channel_name=escape(channel["name"]),
+        upstream_base_url=escape(channel["upstream_base_url"]),
+        description=escape(channel["description"]),
+        enabled_checked=checked,
+        access_key=escape(channel["access_key"]),
+        upstream_api_key_masked=escape(mask_secret(channel["upstream_api_key"])),
+        created_at=escape(format_admin_time(channel["created_at"])),
+        updated_at=escape(format_admin_time(channel["updated_at"])),
+        curl_example=curl_example,
+    )
 
     return render_admin_layout(
         f"渠道详情 - {channel['name']}",

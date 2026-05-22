@@ -1,0 +1,23 @@
+<div class="login-shell">
+    <div class="card stack">
+        <div class="section-title">
+            <div>
+                <h2>管理员登录</h2>
+                <p class="muted">使用默认管理员账号进入控制台，首次登录后建议立即修改密码。</p>
+            </div>
+        </div>
+        <form method="post" action="/admin/login" class="stack">
+            <input type="hidden" name="next" value="${next_path}" />
+            <label>
+                用户名
+                <input type="text" name="username" autocomplete="username" value="${username}" placeholder="admin" required />
+            </label>
+            <label>
+                密码
+                <input type="password" name="password" autocomplete="current-password" placeholder="请输入管理员密码" required />
+            </label>
+            <button class="primary-button" type="submit">登录控制台</button>
+        </form>
+        <p class="helper-text">默认账号密码可通过环境变量 ADMIN_USERNAME 和 ADMIN_PASSWORD 初始化。系统只会在第一次创建数据库时写入默认管理员。</p>
+    </div>
+</div>

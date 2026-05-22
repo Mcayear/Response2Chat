@@ -1,0 +1,45 @@
+<div class="channel-item">
+    <div class="channel-head">
+        <div>
+            <h3>${channel_name}</h3>
+            <p class="muted">${description}</p>
+        </div>
+        <span class="pill ${state_class}">${state_text}</span>
+    </div>
+    <div class="channel-meta">
+        <div>
+            <div class="field-label">上游地址</div>
+            <div class="field-value">${upstream_base_url}</div>
+        </div>
+        <div>
+            <div class="field-label">上游密钥</div>
+            <div class="field-value">${upstream_api_key_masked}</div>
+        </div>
+        <div>
+            <div class="field-label">外部访问 Key</div>
+            <div class="field-value">${access_key}</div>
+        </div>
+        <div>
+            <div class="field-label">最近更新</div>
+            <div class="field-value">${updated_at}</div>
+        </div>
+    </div>
+    <div class="action-row">
+        <a class="ghost-link" href="/admin/channels/${channel_id}">编辑配置</a>
+        <form method="post" action="/admin/channels/${channel_id}/toggle">
+            <input type="hidden" name="enabled" value="${toggle_target}" />
+            <button class="secondary-button" type="submit">${toggle_label}</button>
+        </form>
+        <form method="post" action="/admin/channels/${channel_id}/rotate-key">
+            <button class="secondary-button" type="submit">轮换外部 Key</button>
+        </form>
+        <form method="post" action="/admin/channels/${channel_id}/delete" onsubmit="return confirm('确认删除这个渠道吗？');">
+            <button class="danger-button" type="submit">删除</button>
+        </form>
+    </div>
+    <div class="code-box">POST ${external_base}/v1/chat/completions
+Authorization: Bearer ${access_key}
+Content-Type: application/json
+
+${example_request}</div>
+</div>

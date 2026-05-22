@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${title}</title>
+    <style>
+        :root {
+            --bg: #f4efe7;
+            --bg-accent: #fff8ef;
+            --card: rgba(255, 252, 247, 0.86);
+            --text: #1f2937;
+            --muted: #5b6472;
+            --line: rgba(74, 62, 46, 0.12);
+            --primary: #0f766e;
+            --primary-strong: #115e59;
+            --danger: #b42318;
+            --warning: #b45309;
+            --success-bg: rgba(15, 118, 110, 0.12);
+            --danger-bg: rgba(180, 35, 24, 0.1);
+            --warning-bg: rgba(180, 83, 9, 0.12);
+            --shadow: 0 20px 60px rgba(61, 41, 20, 0.12);
+            --radius: 22px;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            color: var(--text);
+            font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+            background:
+                radial-gradient(circle at top left, rgba(15, 118, 110, 0.16), transparent 28%),
+                radial-gradient(circle at top right, rgba(180, 83, 9, 0.18), transparent 24%),
+                linear-gradient(180deg, var(--bg-accent), var(--bg));
+            min-height: 100vh;
+        }
+        a { color: inherit; }
+        .page { max-width: 1240px; margin: 0 auto; padding: 32px 20px 40px; }
+        .topbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .brand {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .eyebrow {
+            margin: 0;
+            color: var(--primary-strong);
+            font-size: 13px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+        h1 { margin: 0; font-size: clamp(28px, 4vw, 42px); line-height: 1.05; }
+        .subtitle { margin: 0; color: var(--muted); font-size: 15px; }
+        .topbar-actions {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 14px;
+            border-radius: 999px;
+            background: rgba(15, 118, 110, 0.1);
+            color: var(--primary-strong);
+            font-size: 13px;
+            font-weight: 700;
+        }
+        .ghost-link,
+        .ghost-button {
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            padding: 10px 14px;
+            background: rgba(255, 255, 255, 0.65);
+            color: var(--text);
+            text-decoration: none;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .ghost-button:hover,
+        .ghost-link:hover { border-color: rgba(15, 118, 110, 0.45); }
+        .notice {
+            margin-bottom: 18px;
+            padding: 14px 16px;
+            border-radius: 16px;
+            border: 1px solid transparent;
+            font-size: 14px;
+        }
+        .notice-success { background: var(--success-bg); border-color: rgba(15, 118, 110, 0.24); }
+        .notice-error { background: var(--danger-bg); border-color: rgba(180, 35, 24, 0.22); }
+        .notice-warning { background: var(--warning-bg); border-color: rgba(180, 83, 9, 0.22); }
+        .grid { display: grid; gap: 18px; }
+        .dashboard { grid-template-columns: 1.2fr 0.8fr; align-items: start; }
+        .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .card {
+            background: var(--card);
+            border: 1px solid rgba(255, 255, 255, 0.8);
+            box-shadow: var(--shadow);
+            backdrop-filter: blur(14px);
+            border-radius: var(--radius);
+            padding: 22px;
+        }
+        .section-title {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 18px;
+        }
+        .section-title h2,
+        .section-title h3 { margin: 0; font-size: 20px; }
+        .muted { color: var(--muted); font-size: 13px; line-height: 1.5; }
+        .stat-label { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+        .stat-value { font-size: 32px; font-weight: 800; line-height: 1; }
+        .stat-footnote { color: var(--muted); font-size: 12px; margin-top: 10px; }
+        form { margin: 0; }
+        .form-grid { display: grid; gap: 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .form-grid.single { grid-template-columns: 1fr; }
+        label { display: flex; flex-direction: column; gap: 8px; font-size: 14px; font-weight: 600; }
+        input,
+        textarea {
+            width: 100%;
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            padding: 12px 14px;
+            font: inherit;
+            color: var(--text);
+            background: rgba(255, 255, 255, 0.92);
+        }
+        textarea { min-height: 108px; resize: vertical; }
+        input:focus,
+        textarea:focus { outline: 2px solid rgba(15, 118, 110, 0.18); border-color: rgba(15, 118, 110, 0.4); }
+        .button-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+        .primary-button,
+        .secondary-button,
+        .danger-button {
+            border: none;
+            border-radius: 14px;
+            padding: 12px 16px;
+            font: inherit;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .primary-button { background: var(--primary); color: #fff; }
+        .secondary-button { background: rgba(15, 118, 110, 0.1); color: var(--primary-strong); }
+        .danger-button { background: rgba(180, 35, 24, 0.12); color: var(--danger); }
+        .primary-button:hover { background: var(--primary-strong); }
+        .secondary-button:hover { background: rgba(15, 118, 110, 0.18); }
+        .danger-button:hover { background: rgba(180, 35, 24, 0.2); }
+        .stack { display: flex; flex-direction: column; gap: 14px; }
+        .channel-list { display: flex; flex-direction: column; gap: 14px; }
+        .channel-item {
+            border: 1px solid var(--line);
+            border-radius: 18px;
+            padding: 16px;
+            background: rgba(255, 255, 255, 0.7);
+        }
+        .channel-head {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 14px;
+            margin-bottom: 12px;
+        }
+        .channel-meta { display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 14px; }
+        .field-label { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+        .field-value { font-size: 14px; line-height: 1.5; word-break: break-all; }
+        .pill {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 999px;
+            padding: 8px 12px;
+            font-size: 12px;
+            font-weight: 700;
+        }
+        .pill-enabled { background: rgba(15, 118, 110, 0.12); color: var(--primary-strong); }
+        .pill-disabled { background: rgba(180, 35, 24, 0.12); color: var(--danger); }
+        .action-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+        .action-row form { display: inline-flex; }
+        .code-box {
+            margin-top: 14px;
+            border-radius: 16px;
+            padding: 14px;
+            background: #12211e;
+            color: #def7ec;
+            font-size: 13px;
+            line-height: 1.6;
+            overflow-x: auto;
+            white-space: pre-wrap;
+        }
+        .login-shell { max-width: 480px; margin: 8vh auto 0; }
+        .login-shell .card { padding: 28px; }
+        .helper-text { color: var(--muted); font-size: 13px; line-height: 1.6; }
+        @media (max-width: 960px) {
+            .dashboard,
+            .stats,
+            .form-grid,
+            .channel-meta { grid-template-columns: 1fr; }
+            .topbar { align-items: flex-start; flex-direction: column; }
+            .topbar-actions { justify-content: flex-start; }
+        }
+    </style>
+</head>
+<body>
+    <div class="page">
+        <div class="topbar">
+            <div class="brand">
+                <p class="eyebrow">Response2Chat Console</p>
+                <h1>${title}</h1>
+                <p class="subtitle">多渠道路由、管理员登录和外部访问 key 统一配置。</p>
+            </div>
+            ${nav_html}
+        </div>
+        ${notice_html}
+        ${content_html}
+    </div>
+</body>
+</html>

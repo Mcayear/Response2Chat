@@ -1,0 +1,99 @@
+<div class="grid stats">
+    <div class="card">
+        <div class="stat-label">渠道总数</div>
+        <div class="stat-value">${stats_total}</div>
+        <div class="stat-footnote">所有已创建渠道</div>
+    </div>
+    <div class="card">
+        <div class="stat-label">已启用</div>
+        <div class="stat-value">${stats_enabled}</div>
+        <div class="stat-footnote">可供外部调用的渠道</div>
+    </div>
+    <div class="card">
+        <div class="stat-label">已停用</div>
+        <div class="stat-value">${stats_disabled}</div>
+        <div class="stat-footnote">保留配置但不接受调用</div>
+    </div>
+</div>
+<div class="grid dashboard" style="margin-top: 18px;">
+    <div class="card stack">
+        <div class="section-title">
+            <div>
+                <h2>新增渠道</h2>
+                <p class="muted">填写上游 Response API 地址和真实密钥，保存后系统会自动生成对外访问 key。</p>
+            </div>
+        </div>
+        <form method="post" action="/admin/channels" class="stack">
+            <div class="form-grid">
+                <label>
+                    渠道名称
+                    <input type="text" name="name" placeholder="例如：主账号 A" required />
+                </label>
+                <label>
+                    上游基础 URL
+                    <input type="text" name="upstream_base_url" placeholder="https://your-provider.com/v1" required />
+                </label>
+            </div>
+            <div class="form-grid single">
+                <label>
+                    上游 API Key
+                    <input type="text" name="upstream_api_key" placeholder="sk-...，可留空表示不上送 Authorization" />
+                </label>
+            </div>
+            <div class="form-grid single">
+                <label>
+                    描述
+                    <textarea name="description" placeholder="可选，记录渠道归属或用途"></textarea>
+                </label>
+            </div>
+            <div class="button-row">
+                <button class="primary-button" type="submit">创建渠道并生成外部 Key</button>
+            </div>
+        </form>
+    </div>
+    <div class="stack">
+        <div class="card stack">
+            <div class="section-title">
+                <div>
+                    <h3>修改管理员密码</h3>
+                    <p class="muted">默认密码只用于初始化。数据库生成后，环境变量不会覆盖已修改的管理员密码。</p>
+                </div>
+            </div>
+            <form method="post" action="/admin/change-password" class="stack">
+                <label>
+                    当前密码
+                    <input type="password" name="current_password" autocomplete="current-password" required />
+                </label>
+                <label>
+                    新密码
+                    <input type="password" name="new_password" autocomplete="new-password" minlength="8" required />
+                </label>
+                <label>
+                    确认新密码
+                    <input type="password" name="confirm_password" autocomplete="new-password" minlength="8" required />
+                </label>
+                <button class="primary-button" type="submit">更新管理员密码</button>
+            </form>
+        </div>
+        <div class="card stack">
+            <div class="section-title">
+                <div>
+                    <h3>调用规则</h3>
+                    <p class="muted">外部客户端使用系统生成的访问 key 调用代理，代理再自动切换到对应渠道的真实 URL 和上游密钥。</p>
+                </div>
+            </div>
+            <div class="helper-text">调用地址保持不变：/v1/chat/completions、/v1/responses、/v1/models。区别只在 Authorization 里放的是渠道访问 key，而不是上游服务的真实 key。</div>
+        </div>
+    </div>
+</div>
+<div class="card" style="margin-top: 18px;">
+    <div class="section-title">
+        <div>
+            <h2>渠道列表</h2>
+            <p class="muted">每个渠道都有独立的上游地址、真实密钥和对外访问 key。</p>
+        </div>
+    </div>
+    <div class="channel-list">
+        ${channel_cards_html}
+    </div>
+</div>

@@ -1,0 +1,88 @@
+<div class="grid dashboard">
+    <div class="card stack">
+        <div class="section-title">
+            <div>
+                <h2>编辑渠道</h2>
+                <p class="muted">更新上游地址、真实密钥、状态和描述。外部访问 key 可单独轮换。</p>
+            </div>
+            <a class="ghost-link" href="/admin">返回控制台</a>
+        </div>
+        <form method="post" action="/admin/channels/${channel_id}" class="stack">
+            <div class="form-grid">
+                <label>
+                    渠道名称
+                    <input type="text" name="name" value="${channel_name}" required />
+                </label>
+                <label>
+                    上游基础 URL
+                    <input type="text" name="upstream_base_url" value="${upstream_base_url}" required />
+                </label>
+            </div>
+            <div class="form-grid single">
+                <label>
+                    新的上游 API Key
+                    <input type="text" name="upstream_api_key" placeholder="留空表示保持当前值不变" />
+                </label>
+            </div>
+            <label>
+                <span>清空当前上游 API Key</span>
+                <span class="helper-text">如需切换为无鉴权上游，勾选此项后保存即可清空当前保存的上游密钥。</span>
+                <input type="checkbox" name="clear_upstream_api_key" style="width: auto; margin-top: 6px;" />
+            </label>
+            <div class="form-grid single">
+                <label>
+                    描述
+                    <textarea name="description">${description}</textarea>
+                </label>
+            </div>
+            <label>
+                <span>渠道状态</span>
+                <span class="helper-text">勾选表示允许外部访问 key 命中该渠道。</span>
+                <input type="checkbox" name="enabled" ${enabled_checked} style="width: auto; margin-top: 6px;" />
+            </label>
+            <div class="button-row">
+                <button class="primary-button" type="submit">保存渠道配置</button>
+            </div>
+        </form>
+    </div>
+    <div class="stack">
+        <div class="card stack">
+            <div class="section-title">
+                <div>
+                    <h3>当前渠道信息</h3>
+                    <p class="muted">对外访问 key 和上游密钥解耦，外部只能看到访问 key。</p>
+                </div>
+            </div>
+            <div>
+                <div class="field-label">外部访问 Key</div>
+                <div class="field-value">${access_key}</div>
+            </div>
+            <div>
+                <div class="field-label">上游 API Key</div>
+                <div class="field-value">${upstream_api_key_masked}</div>
+            </div>
+            <div>
+                <div class="field-label">创建时间</div>
+                <div class="field-value">${created_at}</div>
+            </div>
+            <div>
+                <div class="field-label">最近更新</div>
+                <div class="field-value">${updated_at}</div>
+            </div>
+            <div class="button-row">
+                <form method="post" action="/admin/channels/${channel_id}/rotate-key">
+                    <button class="secondary-button" type="submit">轮换外部访问 Key</button>
+                </form>
+            </div>
+        </div>
+        <div class="card stack">
+            <div class="section-title">
+                <div>
+                    <h3>调用示例</h3>
+                    <p class="muted">外部系统始终调用当前代理服务，Authorization 使用渠道访问 key。</p>
+                </div>
+            </div>
+            <div class="code-box">${curl_example}</div>
+        </div>
+    </div>
+</div>
