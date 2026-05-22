@@ -30,6 +30,10 @@
             <input type="hidden" name="enabled" value="${toggle_target}" />
             <button class="secondary-button" type="submit">${toggle_label}</button>
         </form>
+        <form method="post" action="/admin/channels/${channel_id}/test">
+            <input type="hidden" name="return_to" value="/admin" />
+            <button class="secondary-button" type="submit">测试联通</button>
+        </form>
         <form method="post" action="/admin/channels/${channel_id}/rotate-key">
             <button class="secondary-button" type="submit">轮换外部 Key</button>
         </form>
@@ -37,9 +41,4 @@
             <button class="danger-button" type="submit">删除</button>
         </form>
     </div>
-    <div class="code-box">POST ${external_base}/v1/chat/completions
-Authorization: Bearer ${access_key}
-Content-Type: application/json
-
-${example_request}</div>
 </div>

@@ -751,7 +751,6 @@ def render_dashboard_page(
     level: str = "success",
 ) -> str:
     channel_cards = []
-    external_base = str(request.base_url).rstrip("/")
 
     if channels:
         for channel in channels:
@@ -760,16 +759,6 @@ def render_dashboard_page(
             state_class = "pill-enabled" if channel["enabled"] else "pill-disabled"
             state_text = "启用中" if channel["enabled"] else "已停用"
             description = escape(channel["description"] or "未填写描述")
-            example = escape(
-                json.dumps(
-                    {
-                        "model": "gpt-4.1",
-                        "messages": [{"role": "user", "content": "你好"}],
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
             channel_cards.append(
                 render_html_template(
                     "admin_channel_card.html",
@@ -784,8 +773,6 @@ def render_dashboard_page(
                     channel_id=channel["id"],
                     toggle_target=toggle_target,
                     toggle_label=toggle_label,
-                    external_base=external_base,
-                    example_request=example,
                 )
             )
 
@@ -807,21 +794,7 @@ def render_channel_detail_page(
     notice: str = "",
     level: str = "success",
 ) -> str:
-    external_base = str(request.base_url).rstrip("/")
     checked = "checked" if channel["enabled"] else ""
-    curl_example = escape(
-        "\n".join(
-            [
-                f'curl -X POST "{external_base}/v1/chat/completions" \\',
-                f'  -H "Authorization: Bearer {channel["access_key"]}" \\',
-                '  -H "Content-Type: application/json" \\',
-                '  -d \'{',
-                '    "model": "gpt-4.1",',
-                '    "messages": [{"role": "user", "content": "你好"}]',
-                "  }'",
-            ]
-        )
-    )
     body = render_html_template(
         "admin_channel_detail.html",
         channel_id=channel["id"],
@@ -833,7 +806,6 @@ def render_channel_detail_page(
         upstream_api_key_masked=escape(mask_secret(channel["upstream_api_key"])),
         created_at=escape(format_admin_time(channel["created_at"])),
         updated_at=escape(format_admin_time(channel["updated_at"])),
-        curl_example=curl_example,
     )
 
     return render_admin_layout(
@@ -984,6 +956,20 @@ def build_passthrough_request_headers(request: Request, token: str) -> Dict[str,
     return headers
 
 
+def build_channel_upstream_headers(
+    channel: Dict[str, Any],
+    extra_headers: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
+    headers: Dict[str, str] = {
+        "User-Agent": UPSTREAM_USER_AGENT,
+    }
+    if channel.get("upstream_api_key"):
+        headers["Authorization"] = f"Bearer {channel['upstream_api_key']}"
+    if extra_headers:
+        headers.update(extra_headers)
+    return headers
+
+
 def build_passthrough_response_headers(headers: httpx.Headers) -> Dict[str, str]:
     """Filter upstream response headers for downstream responses."""
     filtered_headers: Dict[str, str] = {}
@@ -1030,6 +1016,34 @@ def build_upstream_error_response(status_code: int, error_text: str) -> JSONResp
         status_code=500 if should_return_500 else status_code,
         content=error_output
     )
+
+
+def summarize_upstream_response(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except json.JSONDecodeError:
+        text = " ".join(response.text.split())
+        if not text:
+            return ""
+        return text[:120] + ("..." if len(text) > 120 else "")
+
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = str(error.get("message") or "").strip()
+            code = str(error.get("code") or "").strip()
+            if message and code:
+                return f"{message} (code: {code})"
+            if message:
+                return message
+            if code:
+                return f"code: {code}"
+
+        data = payload.get("data")
+        if isinstance(data, list):
+            return f"已返回 {len(data)} 个模型"
+
+    return ""
 
 
 @app.get("/")
@@ -1188,9 +1202,50 @@ async def admin_update_channel(request: Request, channel_id: int):
         )
         if not channel:
             return build_admin_redirect("/admin", "渠道不存在", "error")
-        return build_admin_redirect(f"/admin/channels/{channel_id}", "渠道配置已更新", "success")
+        return build_admin_redirect("/admin", "渠道配置已更新", "success")
     except ValueError as exc:
         return build_admin_redirect(f"/admin/channels/{channel_id}", str(exc), "error")
+
+
+@app.post("/admin/channels/{channel_id}/test")
+async def admin_test_channel(request: Request, channel_id: int):
+    username = get_authenticated_admin(request)
+    if not username:
+        return build_login_redirect(f"/admin/channels/{channel_id}")
+
+    form = await parse_form_body(request)
+    return_path = normalize_next_path(form.get("return_to") or f"/admin/channels/{channel_id}")
+    store: SettingsStore = request.app.state.settings_store
+    channel = await asyncio.to_thread(store.get_channel, channel_id)
+    if not channel:
+        return build_admin_redirect("/admin", "渠道不存在", "error")
+
+    client: httpx.AsyncClient = request.app.state.http_client
+    try:
+        response = await client.get(
+            f"{channel['upstream_base_url']}/models",
+            headers=build_channel_upstream_headers(channel),
+        )
+    except httpx.TimeoutException:
+        return build_admin_redirect(return_path, f"渠道 {channel['name']} 联通测试超时", "error")
+    except httpx.HTTPError as exc:
+        return build_admin_redirect(return_path, f"渠道 {channel['name']} 联通测试失败：{exc}", "error")
+
+    summary = summarize_upstream_response(response)
+    if response.is_success:
+        message = f"渠道 {channel['name']} 联通正常"
+        if summary:
+            message = f"{message}，{summary}"
+        return build_admin_redirect(return_path, message, "success")
+
+    failure_reason = f"HTTP {response.status_code}"
+    if response.status_code in (401, 403):
+        failure_reason = f"HTTP {response.status_code}，上游鉴权失败"
+    elif response.status_code == 404:
+        failure_reason = "HTTP 404，上游未提供 /models 接口"
+    if summary:
+        failure_reason = f"{failure_reason}，{summary}"
+    return build_admin_redirect(return_path, f"渠道 {channel['name']} 联通失败：{failure_reason}", "error")
 
 
 @app.post("/admin/channels/{channel_id}/toggle")
@@ -1425,13 +1480,13 @@ async def chat_completions(
     client: httpx.AsyncClient = request.app.state.http_client
     
     # 准备请求头
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "text/event-stream",
-        "User-Agent": UPSTREAM_USER_AGENT,
-    }
-    if channel["upstream_api_key"]:
-        headers["Authorization"] = f"Bearer {channel['upstream_api_key']}"
+    headers = build_channel_upstream_headers(
+        channel,
+        {
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        },
+    )
     
     # Response API URL
     response_url = f"{channel['upstream_base_url']}/responses"
@@ -1859,11 +1914,7 @@ async def list_models(
     """模型列表接口 - 透传到上游"""
     channel = await resolve_channel_from_request(request, authorization)
     client: httpx.AsyncClient = request.app.state.http_client
-    headers: Dict[str, str] = {
-        "User-Agent": UPSTREAM_USER_AGENT,
-    }
-    if channel["upstream_api_key"]:
-        headers["Authorization"] = f"Bearer {channel['upstream_api_key']}"
+    headers = build_channel_upstream_headers(channel)
     
     try:
         response = await client.get(

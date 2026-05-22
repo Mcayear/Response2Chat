@@ -73,16 +73,11 @@
                 <form method="post" action="/admin/channels/${channel_id}/rotate-key">
                     <button class="secondary-button" type="submit">轮换外部访问 Key</button>
                 </form>
+                <form method="post" action="/admin/channels/${channel_id}/test">
+                    <input type="hidden" name="return_to" value="/admin/channels/${channel_id}" />
+                    <button class="secondary-button" type="submit">测试上游联通</button>
+                </form>
             </div>
-        </div>
-        <div class="card stack">
-            <div class="section-title">
-                <div>
-                    <h3>调用示例</h3>
-                    <p class="muted">外部系统始终调用当前代理服务，Authorization 使用渠道访问 key。</p>
-                </div>
-            </div>
-            <div class="code-box">${curl_example}</div>
         </div>
     </div>
 </div>

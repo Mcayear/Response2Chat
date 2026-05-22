@@ -75,11 +75,26 @@ def run_test():
                 else:
                     print(f"Step 9: GET /v1/models [FAIL] (Status: {resp.status_code})")
 
+                resp = client.post(
+                    f"/admin/channels/{channel_id}/test",
+                    data={"return_to": "/admin"},
+                    follow_redirects=False,
+                )
+                location = resp.headers.get("location", "")
+                if resp.status_code == 303 and location.startswith("/admin?notice="):
+                    notice_page = client.get(location)
+                    if notice_page.status_code == 200 and "联通正常" in notice_page.text:
+                        print("Step 10: POST /admin/channels/{id}/test [PASS]")
+                    else:
+                        print(f"Step 10: POST /admin/channels/{{id}}/test [FAIL] (Notice page: {notice_page.status_code})")
+                else:
+                    print(f"Step 10: POST /admin/channels/{{id}}/test [FAIL] (Status: {resp.status_code})")
+
                 resp = client.get("/v1/models", headers={"Authorization": "Bearer wrong-key"})
                 if resp.status_code == 401:
-                    print("Step 10: GET /v1/models with wrong key [PASS]")
+                    print("Step 11: GET /v1/models with wrong key [PASS]")
                 else:
-                    print(f"Step 10: GET /v1/models with wrong key [FAIL]")
+                    print(f"Step 11: GET /v1/models with wrong key [FAIL]")
 
                 update_data = {
                     "name": "channel-a",
@@ -90,11 +105,19 @@ def run_test():
                     "enabled": "on",
                 }
                 resp = client.post(f"/admin/channels/{channel_id}", data=update_data, follow_redirects=False)
+                location = resp.headers.get("location", "")
                 updated_channel = main.app.state.settings_store.get_channel(channel_id)
-                if resp.status_code == 303 and updated_channel and updated_channel["upstream_api_key"] == "":
-                    print("Step 11: Clear upstream_api_key [PASS]")
+                if resp.status_code == 303 and location.startswith("/admin?") and updated_channel and updated_channel["upstream_api_key"] == "":
+                    print("Step 12: Save channel redirects to dashboard [PASS]")
                 else:
-                    print(f"Step 11: Clear upstream_api_key [FAIL] (Status: {resp.status_code})")
+                    print(f"Step 12: Save channel redirects to dashboard [FAIL] (Status: {resp.status_code})")
+
+                dashboard_resp = client.get("/admin")
+                detail_resp = client.get(f"/admin/channels/{channel_id}")
+                if "Authorization: Bearer" not in dashboard_resp.text and "Authorization: Bearer" not in detail_resp.text:
+                    print("Step 13: Admin pages hide request example [PASS]")
+                else:
+                    print("Step 13: Admin pages hide request example [FAIL]")
 
                 def no_auth_handler(request):
                     if str(request.url) == "https://example.com/v1/models" and "Authorization" not in request.headers and request.headers.get("User-Agent") == main.UPSTREAM_USER_AGENT:
@@ -104,9 +127,9 @@ def run_test():
                 replace_http_client(main.app, no_auth_handler)
                 resp = client.get("/v1/models", headers={"Authorization": f"Bearer {access_key}"})
                 if resp.status_code == 200 and resp.json()["data"][0]["id"] == "model-no-auth":
-                    print("Step 12: GET /v1/models after clearing upstream key [PASS]")
+                    print("Step 14: GET /v1/models after clearing upstream key [PASS]")
                 else:
-                    print(f"Step 12: GET /v1/models after clearing upstream key [FAIL] (Status: {resp.status_code})")
+                    print(f"Step 14: GET /v1/models after clearing upstream key [FAIL] (Status: {resp.status_code})")
 
                 def non_json_handler(request):
                     if str(request.url) == "https://example.com/v1/models" and request.headers.get("User-Agent") == main.UPSTREAM_USER_AGENT:
@@ -116,9 +139,9 @@ def run_test():
                 replace_http_client(main.app, non_json_handler)
                 resp = client.get("/v1/models", headers={"Authorization": f"Bearer {access_key}"})
                 if resp.status_code == 502 and resp.text == "upstream models unavailable":
-                    print("Step 13: GET /v1/models non-json passthrough [PASS]")
+                    print("Step 15: GET /v1/models non-json passthrough [PASS]")
                 else:
-                    print(f"Step 13: GET /v1/models non-json passthrough [FAIL] (Status: {resp.status_code})")
+                    print(f"Step 15: GET /v1/models non-json passthrough [FAIL] (Status: {resp.status_code})")
 
                 def stream_error_handler(request):
                     if str(request.url) == "https://example.com/v1/responses" and request.headers.get("User-Agent") == main.UPSTREAM_USER_AGENT:
@@ -136,9 +159,9 @@ def run_test():
                     },
                 )
                 if resp.status_code == 500 and resp.json().get("error", {}).get("message") == "upstream stream failed":
-                    print("Step 14: Stream error status passthrough [PASS]")
+                    print("Step 16: Stream error status passthrough [PASS]")
                 else:
-                    print(f"Step 14: Stream error status passthrough [FAIL] (Status: {resp.status_code})")
+                    print(f"Step 16: Stream error status passthrough [FAIL] (Status: {resp.status_code})")
             finally:
                 current_client = main.app.state.http_client
                 if isinstance(current_client, httpx.AsyncClient):
