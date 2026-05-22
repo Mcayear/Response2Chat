@@ -122,10 +122,15 @@ docker build --no-cache -t response2chat .
 docker run -d \
   --name response2chat \
   -p 8011:8000 \
+  -v response2chat-data:/app/data \
   -e RESPONSE_API_BASE=https://your-response-api.com/v1 \
   -e DEFAULT_TIMEOUT=300 \
   response2chat
 ```
+
+数据库默认写入 /app/data/response2chat.db。建议保留上面的卷挂载，这样即使容器删除后重新创建，渠道配置和管理员数据也不会丢失。
+
+如果只是对同一个容器执行 docker restart，数据通常不会丢；更常见的数据丢失场景是删容器后重新 docker run，或者执行 docker-compose down -v。
 
 #### 使用 Docker Compose（推荐）
 
@@ -143,6 +148,8 @@ docker-compose logs -f
 # 停止服务
 docker-compose down
 ```
+
+Compose 已默认把 /app/data 挂到 named volume response2chat-data。若需要同时删除数据库数据，再显式执行 docker-compose down -v。
 
 ## 📖 API 使用
 

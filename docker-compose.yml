@@ -18,6 +18,8 @@ services:
       - FORCE_DEFAULT_INSTRUCTIONS=${FORCE_DEFAULT_INSTRUCTIONS}
     env_file:
       - .env
+    volumes:
+      - response2chat-data:/app/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
@@ -25,3 +27,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 5s
+
+volumes:
+  response2chat-data:
