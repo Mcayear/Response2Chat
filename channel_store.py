@@ -168,8 +168,8 @@ class SettingsStore:
         normalized_url = normalize_base_url(self.bootstrap_channel_url)
         with self._connect() as conn:
             existing = conn.execute(
-                "SELECT id FROM channels WHERE upstream_base_url = ? LIMIT 1",
-                (normalized_url,),
+                "SELECT id FROM channels WHERE upstream_base_url = ? OR name = ? LIMIT 1",
+                (normalized_url, self.bootstrap_channel_name),
             ).fetchone()
             if existing:
                 return
