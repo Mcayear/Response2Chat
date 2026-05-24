@@ -989,8 +989,14 @@ def build_upstream_error_response(status_code: int, error_text: str) -> JSONResp
 
     try:
         error_output = json.loads(error_text)
-        error_code = error_output.get("error", {}).get("code")
-        error_message = error_output.get("error", {}).get("message", "")
+        error_obj = error_output.get("error", {})
+        if isinstance(error_obj, dict):
+            error_code = error_obj.get("code")
+            error_message = error_obj.get("message", "")
+        else:
+            error_code = None
+            error_message = str(error_obj)
+
         if error_code == 503 or \
            error_code == "plan_quota_exceeded" or \
            "账户池都无可用" in error_message or \

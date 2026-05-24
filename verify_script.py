@@ -46,12 +46,11 @@ def run_test():
                 return
 
             # 4. POST /admin/channels 创建 channel-a
-            # We set base_url to something that will be appended with /models
+            # We set upstream_base_url to something that will be appended with /models
             channel_data = {
                 "name": "channel-a",
-                "base_url": "https://example.com/v1",
-                "api_key": "upstream-secret",
-                "type": "openai"
+                "upstream_base_url": "https://example.com/v1",
+                "upstream_api_key": "upstream-secret"
             }
             resp = client.post("/admin/channels", data=channel_data, follow_redirects=False)
             if resp.status_code == 303:
@@ -62,12 +61,12 @@ def run_test():
 
             # 5. 从 client.app.state.settings_store.list_channels() 拿到 access_key
             channels = client.app.state.settings_store.list_channels()
-            if len(channels) == 1:
-                channel = channels[0]
-                access_key = channel.get("access_key") if isinstance(channel, dict) else getattr(channel, "access_key")
+            channel_a = next((c for c in channels if (c.get("name") if isinstance(c, dict) else getattr(c, "name")) == "channel-a"), None)
+            if channel_a:
+                access_key = channel_a.get("access_key") if isinstance(channel_a, dict) else getattr(channel_a, "access_key")
                 print(f"Step 5: Access key retrieved - PASS")
             else:
-                print(f"Step 5: FAIL - Found {len(channels)} channels")
+                print(f"Step 5: FAIL - could not find channel-a among {len(channels)} channels")
                 return
 
             # 6. 用 MockTransport 替换 client.app.state.http_client
