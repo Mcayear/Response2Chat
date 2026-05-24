@@ -48,15 +48,16 @@ cp .env.example .env
 编辑 `.env` 文件。现在有两种初始化方式：
 
 - 只配置管理员账号，启动后登录后台手工创建渠道
-- 额外填写 `RESPONSE_API_BASE` 和 `RESPONSE_API_KEY`，让系统首次启动时自动创建一个引导渠道
+- 额外填写 `ENABLE_BOOTSTRAP_CHANNEL=true`、`RESPONSE_API_BASE` 和 `RESPONSE_API_KEY`，让系统启动时自动创建一个引导渠道
 
 ```env
 # 管理员账号，数据库第一次初始化时写入
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=admin123456
 
-# 可选：首次启动时自动创建一个默认渠道
-RESPONSE_API_BASE=https://your-response-api.com/v1
+# 可选：启动时自动创建一个默认渠道，默认关闭
+ENABLE_BOOTSTRAP_CHANNEL=false
+RESPONSE_API_BASE=
 RESPONSE_API_KEY=sk-your-upstream-key
 BOOTSTRAP_CHANNEL_NAME=默认渠道
 
@@ -123,9 +124,16 @@ docker run -d \
   --name response2chat \
   -p 8011:8000 \
   -v ./response2chat-data:/app/data \
-  -e RESPONSE_API_BASE=https://your-response-api.com/v1 \
   -e DEFAULT_TIMEOUT=300 \
   response2chat
+```
+
+如果你希望容器启动时自动创建引导渠道，再额外追加下面这些环境变量：
+
+```bash
+-e ENABLE_BOOTSTRAP_CHANNEL=true \
+-e RESPONSE_API_BASE=https://your-response-api.com/v1 \
+-e RESPONSE_API_KEY=sk-your-upstream-key
 ```
 
 数据库默认写入 /app/data/response2chat.db。建议保留上面的卷挂载，这样即使容器删除后重新创建，渠道配置和管理员数据也不会丢失。
@@ -137,7 +145,7 @@ docker run -d \
 ```bash
 # 先配置 .env 文件
 cp .env.example .env
-# 编辑 .env，至少设置管理员账号；如需引导渠道再设置 RESPONSE_API_BASE
+# 编辑 .env，至少设置管理员账号；如需引导渠道再设置 ENABLE_BOOTSTRAP_CHANNEL=true 和 RESPONSE_API_BASE
 
 # 构建并启动
 docker-compose up -d
@@ -236,8 +244,9 @@ curl -H "Authorization: Bearer CHANNEL_ACCESS_KEY" http://localhost:8000/v1/mode
 | `ADMIN_USERNAME` | 否 | 默认管理员用户名，仅首次初始化数据库时写入 | `admin` |
 | `ADMIN_PASSWORD` | 否 | 默认管理员密码，仅首次初始化数据库时写入 | `admin123456` |
 | `DATABASE_PATH` | 否 | SQLite 数据库文件路径 | `data/response2chat.db` |
-| `RESPONSE_API_BASE` | 否 | 引导渠道的上游基础 URL；留空表示不自动创建渠道 | 空 |
-| `RESPONSE_API_KEY` | 否 | 引导渠道的上游 API Key | 空 |
+| `ENABLE_BOOTSTRAP_CHANNEL` | 否 | 是否在启动时自动创建引导渠道 | `false` |
+| `RESPONSE_API_BASE` | 否 | 引导渠道的上游基础 URL；仅在 `ENABLE_BOOTSTRAP_CHANNEL=true` 时生效 | 空 |
+| `RESPONSE_API_KEY` | 否 | 引导渠道的上游 API Key；仅在 `ENABLE_BOOTSTRAP_CHANNEL=true` 时生效 | 空 |
 | `BOOTSTRAP_CHANNEL_NAME` | 否 | 引导渠道名称 | `默认渠道` |
 | `ADMIN_SESSION_TTL_SECONDS` | 否 | 管理后台登录态有效期（秒） | `43200` |
 | `ADMIN_SESSION_COOKIE_NAME` | 否 | 管理后台 Cookie 名称 | `response2chat_admin_session` |
