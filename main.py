@@ -42,6 +42,9 @@ logger = logging.getLogger("response2chat")
 # ==================== 配置 ====================
 RESPONSE_API_BASE = os.getenv("RESPONSE_API_BASE", "").strip()
 RESPONSE_API_KEY = os.getenv("RESPONSE_API_KEY", "").strip()
+ENABLE_BOOTSTRAP_CHANNEL = os.getenv("ENABLE_BOOTSTRAP_CHANNEL", "false").lower() == "true"
+BOOTSTRAP_CHANNEL_URL = RESPONSE_API_BASE if ENABLE_BOOTSTRAP_CHANNEL else ""
+BOOTSTRAP_CHANNEL_KEY = RESPONSE_API_KEY if ENABLE_BOOTSTRAP_CHANNEL else ""
 DEFAULT_TIMEOUT = int(os.getenv("DEFAULT_TIMEOUT", "300"))
 POOL_TIMEOUT = float(os.getenv("POOL_TIMEOUT", "10"))
 STREAM_READ_TIMEOUT = float(os.getenv("STREAM_READ_TIMEOUT", "120"))
@@ -872,8 +875,8 @@ async def lifespan(app: FastAPI):
         database_path=DATABASE_PATH,
         default_admin_username=ADMIN_USERNAME,
         default_admin_password=ADMIN_PASSWORD,
-        bootstrap_channel_url=RESPONSE_API_BASE,
-        bootstrap_channel_key=RESPONSE_API_KEY,
+        bootstrap_channel_url=BOOTSTRAP_CHANNEL_URL,
+        bootstrap_channel_key=BOOTSTRAP_CHANNEL_KEY,
         bootstrap_channel_name=BOOTSTRAP_CHANNEL_NAME,
     )
     await asyncio.to_thread(app.state.settings_store.initialize)
@@ -1928,7 +1931,7 @@ async def health_check(request: Request):
             "pool_timeout": POOL_TIMEOUT,
             "stream_read_timeout": STREAM_READ_TIMEOUT,
             "stream_max_duration": STREAM_MAX_DURATION,
-            "bootstrap_channel_configured": bool(RESPONSE_API_BASE)
+            "bootstrap_channel_configured": bool(BOOTSTRAP_CHANNEL_URL)
         }
     }
 
@@ -1968,6 +1971,9 @@ if __name__ == "__main__":
     host = os.getenv("HOST", "0.0.0.0")
     
     print(f"Starting Response to Chat API Proxy on {host}:{port}")
-    print(f"Upstream API: {RESPONSE_API_BASE}")
+    if BOOTSTRAP_CHANNEL_URL:
+        print(f"Bootstrap channel upstream API: {BOOTSTRAP_CHANNEL_URL}")
+    else:
+        print("Bootstrap channel: disabled")
     
     uvicorn.run(app, host=host, port=port)
