@@ -8,8 +8,6 @@ import json
 tmp_db_dir = tempfile.mkdtemp()
 tmp_db_path = os.path.join(tmp_db_dir, "test.db")
 os.environ["DATABASE_PATH"] = tmp_db_path
-os.environ["RESPONSE_API_BASE"] = ""
-os.environ["RESPONSE_API_KEY"] = ""
 os.environ["RELOAD"] = "false"
 
 import main

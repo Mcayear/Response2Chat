@@ -9,9 +9,6 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - ENABLE_BOOTSTRAP_CHANNEL=${ENABLE_BOOTSTRAP_CHANNEL}
-      - RESPONSE_API_BASE=${RESPONSE_API_BASE}
-      - RESPONSE_API_KEY=${RESPONSE_API_KEY}
       - HOST=0.0.0.0
       - PORT=8000
       - DEFAULT_TIMEOUT=300

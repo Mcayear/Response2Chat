@@ -88,16 +88,10 @@ class SettingsStore:
         database_path: str,
         default_admin_username: str,
         default_admin_password: str,
-        bootstrap_channel_url: str = "",
-        bootstrap_channel_key: str = "",
-        bootstrap_channel_name: str = "默认渠道",
     ):
         self.database_path = Path(database_path)
         self.default_admin_username = default_admin_username.strip() or "admin"
         self.default_admin_password = default_admin_password or "admin123456"
-        self.bootstrap_channel_url = bootstrap_channel_url.strip()
-        self.bootstrap_channel_key = bootstrap_channel_key.strip()
-        self.bootstrap_channel_name = bootstrap_channel_name.strip() or "默认渠道"
 
     def initialize(self) -> None:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -133,7 +127,6 @@ class SettingsStore:
             conn.commit()
 
         self._ensure_default_admin()
-        self._ensure_bootstrap_channel()
 
     def _connect(self) -> _ManagedConnection:
         conn = sqlite3.connect(str(self.database_path), check_same_thread=False)
@@ -155,41 +148,6 @@ class SettingsStore:
                 (
                     self.default_admin_username,
                     hash_password(self.default_admin_password),
-                    now,
-                    now,
-                ),
-            )
-            conn.commit()
-
-    def _ensure_bootstrap_channel(self) -> None:
-        if not self.bootstrap_channel_url:
-            return
-
-        normalized_url = normalize_base_url(self.bootstrap_channel_url)
-        with self._connect() as conn:
-            existing = conn.execute(
-                "SELECT id FROM channels WHERE upstream_base_url = ? OR name = ? LIMIT 1",
-                (normalized_url, self.bootstrap_channel_name),
-            ).fetchone()
-            if existing:
-                return
-
-            now = utc_now_iso()
-            access_key = self._generate_unique_access_key(conn)
-            conn.execute(
-                """
-                INSERT INTO channels (
-                    name, description, upstream_base_url, upstream_api_key,
-                    access_key, enabled, created_at, updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, 1, ?, ?)
-                """,
-                (
-                    self.bootstrap_channel_name,
-                    "通过环境变量自动创建的渠道",
-                    normalized_url,
-                    self.bootstrap_channel_key,
-                    access_key,
                     now,
                     now,
                 ),

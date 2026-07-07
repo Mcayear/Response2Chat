@@ -40,11 +40,6 @@ logging.basicConfig(
 logger = logging.getLogger("response2chat")
 
 # ==================== 配置 ====================
-RESPONSE_API_BASE = os.getenv("RESPONSE_API_BASE", "").strip()
-RESPONSE_API_KEY = os.getenv("RESPONSE_API_KEY", "").strip()
-ENABLE_BOOTSTRAP_CHANNEL = os.getenv("ENABLE_BOOTSTRAP_CHANNEL", "false").lower() == "true"
-BOOTSTRAP_CHANNEL_URL = RESPONSE_API_BASE if ENABLE_BOOTSTRAP_CHANNEL else ""
-BOOTSTRAP_CHANNEL_KEY = RESPONSE_API_KEY if ENABLE_BOOTSTRAP_CHANNEL else ""
 DEFAULT_TIMEOUT = int(os.getenv("DEFAULT_TIMEOUT", "300"))
 POOL_TIMEOUT = float(os.getenv("POOL_TIMEOUT", "10"))
 STREAM_READ_TIMEOUT = float(os.getenv("STREAM_READ_TIMEOUT", "120"))
@@ -55,7 +50,6 @@ ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123456")
 ADMIN_SESSION_TTL_SECONDS = int(os.getenv("ADMIN_SESSION_TTL_SECONDS", str(12 * 60 * 60)))
 ADMIN_SESSION_COOKIE_NAME = os.getenv("ADMIN_SESSION_COOKIE_NAME", "response2chat_admin_session")
 ADMIN_COOKIE_SECURE = os.getenv("ADMIN_COOKIE_SECURE", "false").lower() == "true"
-BOOTSTRAP_CHANNEL_NAME = os.getenv("BOOTSTRAP_CHANNEL_NAME", "默认渠道")
 ADMIN_TEST_MODEL = "gpt-5.4"
 ADMIN_TEST_INPUT = "ping"
 UPSTREAM_USER_AGENT = "Codex Desktop/0.131.0-alpha.9 (Windows 10.0.26200; x86_64) unknown (Codex Desktop; 26.513.40821)"
@@ -875,9 +869,6 @@ async def lifespan(app: FastAPI):
         database_path=DATABASE_PATH,
         default_admin_username=ADMIN_USERNAME,
         default_admin_password=ADMIN_PASSWORD,
-        bootstrap_channel_url=BOOTSTRAP_CHANNEL_URL,
-        bootstrap_channel_key=BOOTSTRAP_CHANNEL_KEY,
-        bootstrap_channel_name=BOOTSTRAP_CHANNEL_NAME,
     )
     await asyncio.to_thread(app.state.settings_store.initialize)
     app.state.admin_sessions = AdminSessionManager(ADMIN_SESSION_TTL_SECONDS)
@@ -1930,8 +1921,7 @@ async def health_check(request: Request):
             "default_timeout": DEFAULT_TIMEOUT,
             "pool_timeout": POOL_TIMEOUT,
             "stream_read_timeout": STREAM_READ_TIMEOUT,
-            "stream_max_duration": STREAM_MAX_DURATION,
-            "bootstrap_channel_configured": bool(BOOTSTRAP_CHANNEL_URL)
+            "stream_max_duration": STREAM_MAX_DURATION
         }
     }
 
@@ -1971,9 +1961,5 @@ if __name__ == "__main__":
     host = os.getenv("HOST", "0.0.0.0")
     
     print(f"Starting Response to Chat API Proxy on {host}:{port}")
-    if BOOTSTRAP_CHANNEL_URL:
-        print(f"Bootstrap channel upstream API: {BOOTSTRAP_CHANNEL_URL}")
-    else:
-        print("Bootstrap channel: disabled")
     
     uvicorn.run(app, host=host, port=port)
