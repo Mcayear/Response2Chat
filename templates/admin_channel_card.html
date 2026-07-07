@@ -30,7 +30,7 @@
             <input type="hidden" name="enabled" value="${toggle_target}" />
             <button class="secondary-button" type="submit">${toggle_label}</button>
         </form>
-        <form method="post" action="/admin/channels/${channel_id}/test">
+        <form method="post" action="/admin/channels/${channel_id}/test" data-async-test-form="true">
             <input type="hidden" name="return_to" value="/admin" />
             <button class="secondary-button" type="submit">测试联通</button>
         </form>

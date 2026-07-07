@@ -159,6 +159,13 @@
         .primary-button:hover { background: var(--primary-strong); }
         .secondary-button:hover { background: #fafafa; border-color: #d4d4d4; }
         .danger-button:hover { background: var(--danger-bg); border-color: var(--danger); }
+        .primary-button:disabled,
+        .secondary-button:disabled,
+        .danger-button:disabled,
+        .ghost-button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
         .stack { display: flex; flex-direction: column; gap: 16px; }
         .channel-list { display: flex; flex-direction: column; gap: 16px; }
         .channel-item {
@@ -231,7 +238,116 @@
             ${nav_html}
         </div>
         ${notice_html}
+        <div id="live-notice-slot"></div>
         ${content_html}
     </div>
+    <script>
+        (function () {
+            const noticeSlot = document.getElementById("live-notice-slot");
+            if (!noticeSlot) {
+                return;
+            }
+
+            const levelClassMap = {
+                success: "notice-success",
+                error: "notice-error",
+                warning: "notice-warning",
+            };
+
+            const escapeHtml = (value) => {
+                return String(value)
+                    .replaceAll("&", "&amp;")
+                    .replaceAll("<", "&lt;")
+                    .replaceAll(">", "&gt;")
+                    .replaceAll('"', "&quot;")
+                    .replaceAll("'", "&#39;");
+            };
+
+            const showNotice = (message, level) => {
+                if (!message) {
+                    noticeSlot.innerHTML = "";
+                    return;
+                }
+                const safeLevel = levelClassMap[level] ? level : "success";
+                noticeSlot.innerHTML = '<div class="notice ' + levelClassMap[safeLevel] + '">' + escapeHtml(message) + "</div>";
+            };
+
+            const serializeForm = (form) => {
+                const data = new FormData(form);
+                const encoded = new URLSearchParams();
+                for (const [key, value] of data.entries()) {
+                    encoded.append(key, typeof value === "string" ? value : "");
+                }
+                return encoded.toString();
+            };
+
+            const extractNoticeFromUrl = (urlText) => {
+                try {
+                    const parsed = new URL(urlText);
+                    const message = parsed.searchParams.get("notice");
+                    const level = parsed.searchParams.get("level") || "success";
+                    return { message, level };
+                } catch (error) {
+                    return { message: "", level: "error" };
+                }
+            };
+
+            const forms = document.querySelectorAll('form[data-async-test-form="true"]');
+            if (!forms.length) {
+                return;
+            }
+
+            forms.forEach((form) => {
+                form.addEventListener("submit", async (event) => {
+                    event.preventDefault();
+                    const submitButton = form.querySelector('button[type="submit"]');
+                    const originalText = submitButton ? submitButton.textContent : "";
+                    if (submitButton) {
+                        submitButton.disabled = true;
+                        submitButton.textContent = "测试中...";
+                    }
+
+                    try {
+                        const response = await fetch(form.action, {
+                            method: (form.method || "post").toUpperCase(),
+                            headers: {
+                                "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                                "Accept": "application/json",
+                                "X-Requested-With": "XMLHttpRequest",
+                            },
+                            credentials: "same-origin",
+                            body: serializeForm(form),
+                        });
+
+                        const contentType = response.headers.get("content-type") || "";
+                        if (contentType.includes("application/json")) {
+                            const payload = await response.json();
+                            if (payload.redirect_to) {
+                                window.location.href = payload.redirect_to;
+                                return;
+                            }
+                            const level = payload.level || (response.ok ? "success" : "error");
+                            showNotice(payload.message || "测试完成", level);
+                            return;
+                        }
+
+                        const fallbackNotice = extractNoticeFromUrl(response.url);
+                        if (fallbackNotice.message) {
+                            showNotice(fallbackNotice.message, fallbackNotice.level);
+                        } else {
+                            showNotice(response.ok ? "测试完成" : "测试失败，请稍后重试", response.ok ? "success" : "error");
+                        }
+                    } catch (error) {
+                        showNotice("请求失败，请检查网络连接后重试", "error");
+                    } finally {
+                        if (submitButton) {
+                            submitButton.disabled = false;
+                            submitButton.textContent = originalText;
+                        }
+                    }
+                });
+            });
+        })();
+    </script>
 </body>
 </html>

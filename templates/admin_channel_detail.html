@@ -73,7 +73,7 @@
                 <form method="post" action="/admin/channels/${channel_id}/rotate-key">
                     <button class="secondary-button" type="submit">轮换外部访问 Key</button>
                 </form>
-                <form method="post" action="/admin/channels/${channel_id}/test">
+                <form method="post" action="/admin/channels/${channel_id}/test" data-async-test-form="true">
                     <input type="hidden" name="return_to" value="/admin/channels/${channel_id}" />
                     <button class="secondary-button" type="submit">测试上游联通</button>
                 </form>

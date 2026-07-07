@@ -834,6 +834,31 @@ def build_admin_redirect(path: str, message: str = "", level: str = "success") -
     return RedirectResponse(url=path, status_code=303)
 
 
+def wants_json_response(request: Request) -> bool:
+    accept = request.headers.get("accept", "").lower()
+    requested_with = request.headers.get("x-requested-with", "").lower()
+    return requested_with == "xmlhttprequest" or "application/json" in accept
+
+
+def build_admin_feedback_response(
+    request: Request,
+    path: str,
+    message: str,
+    level: str = "success",
+    status_code: int = 200,
+) -> Response:
+    if wants_json_response(request):
+        return JSONResponse(
+            {
+                "ok": level != "error",
+                "level": level,
+                "message": message,
+            },
+            status_code=status_code,
+        )
+    return build_admin_redirect(path, message, level)
+
+
 def build_login_redirect(next_path: str = "/admin") -> RedirectResponse:
     return RedirectResponse(url=f"/admin/login?next={quote(next_path)}", status_code=303)
 
@@ -1213,6 +1238,17 @@ async def admin_update_channel(request: Request, channel_id: int):
 async def admin_test_channel(request: Request, channel_id: int):
     username = get_authenticated_admin(request)
     if not username:
+        if wants_json_response(request):
+            next_path = f"/admin/channels/{channel_id}"
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "level": "error",
+                    "message": "登录状态已失效，请重新登录",
+                    "redirect_to": f"/admin/login?next={quote(next_path)}",
+                },
+                status_code=401,
+            )
         return build_login_redirect(f"/admin/channels/{channel_id}")
 
     form = await parse_form_body(request)
@@ -1220,7 +1256,13 @@ async def admin_test_channel(request: Request, channel_id: int):
     store: SettingsStore = request.app.state.settings_store
     channel = await asyncio.to_thread(store.get_channel, channel_id)
     if not channel:
-        return build_admin_redirect("/admin", "渠道不存在", "error")
+        return build_admin_feedback_response(
+            request=request,
+            path="/admin",
+            message="渠道不存在",
+            level="error",
+            status_code=404,
+        )
 
     client: httpx.AsyncClient = request.app.state.http_client
     test_payload = {
@@ -1240,20 +1282,33 @@ async def admin_test_channel(request: Request, channel_id: int):
             json=test_payload,
         )
     except httpx.TimeoutException:
-        return build_admin_redirect(
-            return_path,
-            f"渠道 {channel['name']} 联通测试超时：调用 {ADMIN_TEST_MODEL} 未在限定时间内返回",
-            "error",
+        return build_admin_feedback_response(
+            request=request,
+            path=return_path,
+            message=f"渠道 {channel['name']} 联通测试超时：调用 {ADMIN_TEST_MODEL} 未在限定时间内返回",
+            level="error",
+            status_code=504,
         )
     except httpx.HTTPError as exc:
-        return build_admin_redirect(return_path, f"渠道 {channel['name']} 联通测试失败：{exc}", "error")
+        return build_admin_feedback_response(
+            request=request,
+            path=return_path,
+            message=f"渠道 {channel['name']} 联通测试失败：{exc}",
+            level="error",
+            status_code=502,
+        )
 
     summary = summarize_upstream_response(response)
     if response.is_success:
         message = f"渠道 {channel['name']} 联通正常，{ADMIN_TEST_MODEL} 调用成功"
         if summary:
             message = f"{message}，{summary}"
-        return build_admin_redirect(return_path, message, "success")
+        return build_admin_feedback_response(
+            request=request,
+            path=return_path,
+            message=message,
+            level="success",
+        )
 
     failure_reason = f"HTTP {response.status_code}"
     if response.status_code in (401, 403):
@@ -1262,10 +1317,12 @@ async def admin_test_channel(request: Request, channel_id: int):
         failure_reason = "HTTP 404，上游未提供 /responses 接口"
     if summary:
         failure_reason = f"{failure_reason}，{summary}"
-    return build_admin_redirect(
-        return_path,
-        f"渠道 {channel['name']} 联通失败：{ADMIN_TEST_MODEL} 调用未通过，{failure_reason}",
-        "error",
+    return build_admin_feedback_response(
+        request=request,
+        path=return_path,
+        message=f"渠道 {channel['name']} 联通失败：{ADMIN_TEST_MODEL} 调用未通过，{failure_reason}",
+        level="error",
+        status_code=response.status_code,
     )
 
 
