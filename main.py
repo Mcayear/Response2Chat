@@ -501,6 +501,7 @@ class ResponseStreamProcessor:
         self.current_output_index = None
         self.tool_calls = []
         self.current_tool_call = None
+        self.current_tool_call_index = None
     
     def process_event(self, event_type: str, event_data: Dict[str, Any]) -> List[str]:
         """处理单个 SSE 事件，返回要发送的 Chat chunks"""
@@ -519,6 +520,7 @@ class ResponseStreamProcessor:
             self.current_output_index = event_data.get("output_index", 0)
             if item.get("type") == "function_call":
                 # 工具调用开始
+                self.current_tool_call_index = len(self.tool_calls)
                 self.current_tool_call = {
                     "id": item.get("call_id", f"call_{uuid.uuid4().hex[:8]}"),
                     "type": "function",
@@ -527,6 +529,20 @@ class ResponseStreamProcessor:
                         "arguments": ""
                     }
                 }
+                chunks.append(create_chat_stream_chunk(
+                    self.chat_id, self.model,
+                    {
+                        "tool_calls": [{
+                            "index": self.current_tool_call_index,
+                            "id": self.current_tool_call["id"],
+                            "type": "function",
+                            "function": {
+                                "name": self.current_tool_call["function"]["name"],
+                                "arguments": ""
+                            }
+                        }]
+                    }
+                ))
         
         elif event_type == "response.output_text.delta":
             # 文本增量
@@ -569,7 +585,7 @@ class ResponseStreamProcessor:
                 # 发送工具调用增量
                 tool_call_delta = {
                     "tool_calls": [{
-                        "index": len(self.tool_calls),
+                        "index": self.current_tool_call_index,
                         "function": {"arguments": delta_args}
                     }]
                 }
@@ -583,6 +599,7 @@ class ResponseStreamProcessor:
             if self.current_tool_call:
                 self.tool_calls.append(self.current_tool_call)
                 self.current_tool_call = None
+                self.current_tool_call_index = None
         
         elif event_type == "response.output_item.done":
             # 单个输出项完成
@@ -611,7 +628,7 @@ class ResponseStreamProcessor:
         finish_chunk = create_chat_stream_chunk(
             self.chat_id, self.model,
             {},
-            finish_reason="stop",
+            finish_reason="tool_calls" if self.tool_calls else "stop",
             usage=chat_usage
         )
         chunks.append(finish_chunk)
