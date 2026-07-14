@@ -262,6 +262,7 @@ curl -H "Authorization: Bearer CHANNEL_ACCESS_KEY" http://localhost:8000/v1/mode
 | `KEEPALIVE_EXPIRY` | 否 | Keep-Alive 连接保留时间（秒） | `60` |
 | `DEFAULT_INSTRUCTIONS` | 否 | 默认系统提示词 | 空 |
 | `FORCE_DEFAULT_INSTRUCTIONS` | 否 | 即使已有 system 消息也强制附加默认提示词 | `false` |
+| `AUTO_PROMPT_CACHE_KEY` | 否 | 客户端未提供时自动生成稳定的 `prompt_cache_key`，提高增长式会话和工具调用的缓存命中率；不兼容的上游可设为 `false` | `true` |
 
 ## 🖥️ 管理后台能力
 

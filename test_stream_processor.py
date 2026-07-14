@@ -1,7 +1,12 @@
 import json
 import unittest
 
-from main import ResponseStreamProcessor
+from main import (
+    ChatCompletionRequest,
+    ResponseStreamProcessor,
+    convert_chat_to_response_request,
+    convert_response_usage_to_chat_usage,
+)
 
 
 def parse_chunk(chunk):
@@ -74,6 +79,65 @@ class ResponseStreamProcessorTests(unittest.TestCase):
         finish_choice = parse_chunk(processor.get_final_chunks()[0])["choices"][0]
 
         self.assertEqual(finish_choice["finish_reason"], "stop")
+
+
+class PromptCacheTests(unittest.TestCase):
+    def test_generated_cache_key_is_stable_as_conversation_grows(self):
+        base_request = ChatCompletionRequest(
+            model="gpt-5.6-sol",
+            messages=[
+                {"role": "developer", "content": "Use tools when needed."},
+                {"role": "user", "content": "梁静茹《情歌》的资料"},
+            ],
+            tools=[{
+                "type": "function",
+                "function": {"name": "search_web", "parameters": {"type": "object"}},
+            }],
+        )
+        grown_request = ChatCompletionRequest(
+            model="gpt-5.6-sol",
+            messages=[
+                {"role": "developer", "content": "Use tools when needed."},
+                {"role": "user", "content": "梁静茹《情歌》的资料"},
+                {"role": "assistant", "content": "我先查询。"},
+                {"role": "tool", "tool_call_id": "call_search", "content": "result"},
+            ],
+            tools=base_request.tools,
+        )
+
+        base_key = convert_chat_to_response_request(base_request)["prompt_cache_key"]
+        grown_key = convert_chat_to_response_request(grown_request)["prompt_cache_key"]
+
+        self.assertEqual(base_key, grown_key)
+        self.assertTrue(base_key.startswith("r2c-"))
+        self.assertEqual(len(base_key), 52)
+
+    def test_client_cache_configuration_is_forwarded(self):
+        request = ChatCompletionRequest(
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "hello"}],
+            prompt_cache_key="client-cache-key",
+            prompt_cache_options={"mode": "implicit", "ttl": "30m"},
+        )
+
+        converted = convert_chat_to_response_request(request)
+
+        self.assertEqual(converted["prompt_cache_key"], "client-cache-key")
+        self.assertEqual(converted["prompt_cache_options"], {"mode": "implicit", "ttl": "30m"})
+
+    def test_cache_write_tokens_are_preserved(self):
+        usage = convert_response_usage_to_chat_usage({
+            "input_tokens": 9000,
+            "output_tokens": 100,
+            "total_tokens": 9100,
+            "input_tokens_details": {
+                "cached_tokens": 7680,
+                "cache_write_tokens": 1024,
+            },
+        })
+
+        self.assertEqual(usage["prompt_tokens_details"]["cached_tokens"], 7680)
+        self.assertEqual(usage["prompt_tokens_details"]["cache_write_tokens"], 1024)
 
 
 if __name__ == "__main__":

@@ -27,7 +27,8 @@ EXPOSE 8000
 ENV HOST=0.0.0.0 \
     PORT=8000 \
     DEFAULT_TIMEOUT=300 \
-    LOG_LEVEL=INFO
+    LOG_LEVEL=INFO \
+    AUTO_PROMPT_CACHE_KEY=true
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
